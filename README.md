@@ -56,7 +56,7 @@ pnpm dev
 pnpm dev:down
 ```
 
-ローカルComposeは移植性を優先し、executorに `direct` backendを使用します。信頼できない利用者へ公開してはいけません。
+ローカルComposeは移植性を優先し、executorに `direct` backendを使用します。信頼できない利用者へ公開しないほうがいいと思います。たぶん。
 
 ## 検証
 
