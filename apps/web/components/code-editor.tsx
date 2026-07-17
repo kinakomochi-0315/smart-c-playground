@@ -187,9 +187,9 @@ function FileEditor({ file, active, documentUri, lspClient, isDark, onChange, on
     );
 
     return (
-        <div className="file-editor" data-active={active} aria-hidden={!active}>
+        <div className="hidden size-full min-h-0 data-[active=true]:block" data-active={active} aria-hidden={!active}>
             <CodeMirror
-                className="codemirror-root"
+                className="codemirror-root size-full min-h-0"
                 value={file.content}
                 width="100%"
                 height="100%"
@@ -348,7 +348,7 @@ export function CodeEditor({
     }, []);
 
     return (
-        <div className="file-editor-stack">
+        <div className="size-full min-h-0">
             {files.map((file) => (
                 <FileEditor
                     key={file.name}

@@ -170,7 +170,7 @@ export const InteractiveTerminal = forwardRef<InteractiveTerminalHandle, Interac
         return (
             <div
                 ref={containerRef}
-                className="terminal-root"
+                className="terminal-root size-full overflow-hidden bg-terminal-background"
                 aria-label="C言語プログラムの対話入出力"
                 data-input-enabled={inputEnabled}
             />

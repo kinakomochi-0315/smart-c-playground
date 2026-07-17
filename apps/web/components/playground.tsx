@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { isValidSourceFileName, SOURCE_FILE_MAX_COUNT } from "@smart-c/contracts";
+import { IconPlus, IconX, IconAlertTriangleFilled, IconAlertCircleFilled } from "@tabler/icons-react";
 import {
     type CSSProperties,
     type KeyboardEvent as ReactKeyboardEvent,
@@ -41,13 +42,32 @@ import type {
 const CodeEditor = dynamic(() => import("@/components/code-editor").then((module) => module.CodeEditor), {
     ssr: false,
     loading: () => (
-        <div className="editor-loading" role="status">
+        <div className="grid h-full place-items-center bg-surface font-mono text-xs text-muted" role="status">
             エディターを準備しています
         </div>
     ),
 });
 
 const ACTIVE_EXECUTION_PHASES = new Set<ExecutionPhase>(["creating", "queued", "compiling", "running"]);
+
+const STATUS_DOT_CLASS_NAMES = {
+    idle: "bg-transparent",
+    connecting: "bg-transparent text-warning",
+    connected: "bg-current text-success",
+    reconnecting: "bg-transparent text-warning",
+    unavailable: "bg-current text-danger",
+    creating: "bg-transparent text-warning",
+    queued: "bg-transparent text-warning",
+    compiling: "bg-transparent text-warning",
+    compile_failed: "bg-current text-danger",
+    running: "bg-current text-success",
+    exited: "bg-current text-success",
+    timed_out: "bg-current text-danger",
+    resource_limited: "bg-current text-danger",
+    cancelled: "bg-current text-muted",
+    sandbox_violation: "bg-current text-danger",
+    disconnected: "bg-current text-danger",
+} satisfies Record<LspStatus | ExecutionPhase, string>;
 
 /**
  * 実行フェーズを画面表示用の短い日本語へ変換します。
@@ -800,27 +820,39 @@ export function Playground() {
     } as CSSProperties;
 
     return (
-        <main className="playground">
-            <header className="title-bar">
-                <h1>✨かしこい✨C言語実行環境</h1>
+        <main className="grid h-dvh w-screen min-w-80 grid-rows-[3rem_2.25rem_minmax(0,1fr)] overflow-hidden bg-surface lg:grid-rows-[3rem_minmax(0,1fr)]">
+            <header className="flex h-12 min-w-0 items-center justify-between border-b border-border-strong bg-surface-subtle py-0 pr-2 pl-3 lg:pl-4">
+                <h1 className="max-w-[calc(100vw-7rem)] min-w-0 truncate font-semibold leading-none tracking-wide sm:max-w-none">
+                    ✨かしこい✨C言語実行環境
+                    <span className="ml-2 text-xs font-normal text-black/50">by <a className="underline text-sm" href="https://chimonakiko.net/">chimonakiko</a></span>
+                </h1>
                 <button
                     type="button"
-                    className={executionActive ? "primary-action stop-action" : "primary-action"}
+                    className={`inline-flex h-8 min-w-20 cursor-pointer items-center justify-center gap-2.5 border px-3 font-semibold active:translate-y-px focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus forced-colors:border-[ButtonText] lg:min-w-24 ${
+                        executionActive
+                            ? "border-danger bg-transparent text-danger hover:border-danger hover:bg-danger/10"
+                            : "border-accent bg-accent text-accent-foreground hover:border-accent-hover hover:bg-accent-hover"
+                    }`}
                     onClick={executionActive ? stop : run}
                     aria-keyshortcuts="Control+Enter Meta+Enter"
                 >
                     {executionActive ? "停止" : "実行"}
                     {!executionActive && (
-                        <span className="shortcut" aria-hidden="true">
+                        <span className="hidden font-mono text-xs opacity-75 lg:inline" aria-hidden="true">
                             ⌘↵
                         </span>
                     )}
                 </button>
             </header>
 
-            <div className="mobile-tabs" role="tablist" aria-label="表示ペイン">
+            <div
+                className="grid grid-cols-2 border-b border-border-strong bg-surface-subtle lg:hidden"
+                role="tablist"
+                aria-label="表示ペイン"
+            >
                 <button
                     type="button"
+                    className="h-9 cursor-pointer border-r border-border bg-transparent text-xs text-muted last:border-r-0 aria-selected:border-b-2 aria-selected:border-b-accent aria-selected:font-semibold aria-selected:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
                     role="tab"
                     aria-selected={settings.activeTab === "code"}
                     onClick={() =>
@@ -834,6 +866,7 @@ export function Playground() {
                 </button>
                 <button
                     type="button"
+                    className="h-9 cursor-pointer border-r border-border bg-transparent text-xs text-muted last:border-r-0 aria-selected:border-b-2 aria-selected:border-b-accent aria-selected:font-semibold aria-selected:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
                     role="tab"
                     aria-selected={settings.activeTab === "io"}
                     onClick={() =>
@@ -847,21 +880,33 @@ export function Playground() {
                 </button>
             </div>
 
-            <div ref={workspaceRef} className="workspace" style={workspaceStyle}>
+            <div
+                ref={workspaceRef}
+                className="min-h-0 min-w-0 overflow-hidden lg:grid lg:grid-cols-[minmax(0,var(--code-pane-width))_0.5rem_minmax(0,1fr)]"
+                style={workspaceStyle}
+            >
                 <section
-                    className="pane code-pane"
+                    className="hidden size-full min-h-0 min-w-0 grid-rows-[2.25rem_minmax(0,1fr)] overflow-hidden bg-surface data-[mobile-active=true]:grid lg:grid"
                     data-mobile-active={settings.activeTab === "code"}
                     aria-label="コード入力"
                 >
-                    <div className="file-tabs-bar">
-                        <div className="file-tabs" role="tablist" aria-label="プロジェクトファイル">
+                    <div className="flex min-w-0 border-b border-border bg-surface-subtle">
+                        <div
+                            className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden [scrollbar-width:thin]"
+                            role="tablist"
+                            aria-label="プロジェクトファイル"
+                        >
                             {files.map((file) => {
                                 const isActive = file.name === activeFileName;
                                 return (
-                                    <div key={file.name} className="file-tab" data-active={isActive}>
+                                    <div
+                                        key={file.name}
+                                        className="flex h-9 shrink-0 border-r border-border text-muted data-[active=true]:border-b-2 data-[active=true]:border-b-accent data-[active=true]:bg-surface data-[active=true]:text-foreground"
+                                        data-active={isActive}
+                                    >
                                         <button
                                             type="button"
-                                            className="file-tab-select"
+                                            className="h-9 cursor-pointer whitespace-nowrap bg-transparent px-3 font-mono text-xs hover:bg-accent/10 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
                                             role="tab"
                                             aria-selected={isActive}
                                             onClick={() => setActiveFileName(file.name)}
@@ -872,34 +917,46 @@ export function Playground() {
                                         {isActive && file.name !== "main.c" && (
                                             <button
                                                 type="button"
-                                                className="file-tab-delete"
+                                                className="inline-flex h-9 cursor-pointer items-center justify-center bg-transparent py-0 pr-2 pl-0.5 hover:bg-accent/10 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
                                                 aria-label={`${file.name}を削除`}
                                                 onClick={() => deleteFile(file.name)}
                                             >
-                                                ×
+                                                <IconX className="size-4" aria-hidden="true" focusable="false" />
                                             </button>
                                         )}
                                     </div>
                                 );
                             })}
                         </div>
-                        <div className="pane-status">
-                            <span className={`status-dot status-${lspStatus}`} aria-hidden="true" />
-                            <span>{getLspStatusLabel(lspStatus)}</span>
-                            <span className={diagnostics.errors > 0 ? "diagnostic-error" : undefined}>
-                                E {diagnostics.errors}
-                            </span>
-                            <span className={diagnostics.warnings > 0 ? "diagnostic-warning" : undefined}>
-                                W {diagnostics.warnings}
-                            </span>
-                        </div>
-                        <div className="file-actions" aria-label="ファイル操作">
-                            <button type="button" onClick={createFile} aria-label="ファイルを作成">
-                                ＋
+                        <div className="flex shrink-0 border-l border-border" aria-label="ファイル操作">
+                            <button
+                                type="button"
+                                className="inline-flex h-9 cursor-pointer items-center justify-center bg-transparent px-2 hover:bg-accent/10 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
+                                onClick={createFile}
+                                aria-label="ファイルを作成"
+                            >
+                                <IconPlus className="size-4" aria-hidden="true" focusable="false" />
                             </button>
                         </div>
+                        <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap border-l border-border px-2.5 text-xs tracking-wide text-muted sm:gap-2">
+                            <span
+                                className={`inline-block size-1.5 shrink-0 border border-current forced-color-adjust-none ${STATUS_DOT_CLASS_NAMES[lspStatus]}`}
+                                aria-hidden="true"
+                            />
+                            <span>{getLspStatusLabel(lspStatus)}</span>
+                            <div className="flex gap-2">
+                                <div className="flex items-center gap-1">
+                                    <IconAlertTriangleFilled className="text-warning" size={16} />
+                                    {diagnostics.warnings}
+                                </div>
+                                <div className="flex items-center gap-1">
+                                    <IconAlertCircleFilled className="text-danger" size={16} />
+                                    {diagnostics.errors}
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <div className="pane-body">
+                    <div className="relative min-h-0 min-w-0 overflow-hidden">
                         {hydrated ? (
                             <CodeEditor
                                 key={lspSession?.id ?? `offline-${lspCycle}`}
@@ -912,7 +969,10 @@ export function Playground() {
                                 onDisposed={handleLspDisposed}
                             />
                         ) : (
-                            <div className="editor-loading" role="status">
+                            <div
+                                className="grid h-full place-items-center bg-surface font-mono text-xs text-muted"
+                                role="status"
+                            >
                                 保存したコードを読み込んでいます
                             </div>
                         )}
@@ -920,7 +980,7 @@ export function Playground() {
                 </section>
 
                 <div
-                    className="pane-divider"
+                    className="relative z-[2] hidden w-2 min-w-2 cursor-col-resize touch-none border-x border-border-strong bg-surface-subtle hover:bg-accent/10 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus after:absolute after:top-1/2 after:left-1/2 after:h-7 after:w-px after:-translate-x-1/2 after:-translate-y-1/2 after:bg-border-strong after:content-[''] lg:block"
                     role="separator"
                     aria-label="コードと入出力の幅を変更"
                     aria-orientation="vertical"
@@ -933,18 +993,21 @@ export function Playground() {
                 />
 
                 <section
-                    className="pane io-pane"
+                    className="hidden size-full min-h-0 min-w-0 grid-rows-[2.25rem_minmax(0,1fr)] overflow-hidden bg-surface data-[mobile-active=true]:grid lg:grid"
                     data-mobile-active={settings.activeTab === "io"}
                     aria-label="対話入出力"
                 >
-                    <div className="pane-header">
-                        <span className="file-name">入出力</span>
-                        <div className="pane-status">
-                            <span className={`status-dot status-${executionPhase}`} aria-hidden="true" />
+                    <div className="flex h-9 min-w-0 items-center justify-between gap-3 border-b border-border bg-surface-subtle px-3 text-xs tracking-wide text-muted">
+                        <span className="truncate font-mono font-semibold text-foreground">入出力</span>
+                        <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-xs sm:gap-2">
+                            <span
+                                className={`inline-block size-1.5 shrink-0 border border-current forced-color-adjust-none ${STATUS_DOT_CLASS_NAMES[executionPhase]}`}
+                                aria-hidden="true"
+                            />
                             <span>{getExecutionPhaseLabel(executionPhase)}</span>
                         </div>
                     </div>
-                    <div className="pane-body terminal-body">
+                    <div className="relative min-h-0 min-w-0 overflow-hidden bg-terminal-background px-2.5 py-2">
                         <InteractiveTerminal
                             ref={terminalRef}
                             inputEnabled={executionPhase === "running"}

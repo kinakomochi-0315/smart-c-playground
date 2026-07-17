@@ -23,8 +23,10 @@ interface RootLayoutProps {
  */
 export default function RootLayout({ children }: RootLayoutProps) {
     return (
-        <html lang="ja">
-            <body>{children}</body>
+        <html lang="ja" className="size-full bg-background text-foreground">
+            <body className="size-full overflow-hidden bg-background font-sans text-sm text-foreground [text-rendering:optimizeLegibility]">
+                {children}
+            </body>
         </html>
     );
 }
