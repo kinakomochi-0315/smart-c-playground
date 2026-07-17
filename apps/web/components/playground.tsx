@@ -14,6 +14,7 @@ import {
 
 import { InteractiveTerminal, type InteractiveTerminalHandle } from "@/components/interactive-terminal";
 import { ApiError, createExecution, createLspSession } from "@/lib/client/api";
+import { getNextLspReconnectDelay } from "@/lib/client/lsp-transport";
 import {
     DEFAULT_PROJECT,
     DEFAULT_SETTINGS,
@@ -344,7 +345,6 @@ export function Playground() {
                 clearTimeout(lspReconnectTimerRef.current);
                 lspReconnectTimerRef.current = null;
             }
-            lspReconnectCountRef.current = 0;
             return;
         }
 
@@ -357,7 +357,8 @@ export function Playground() {
             errors: 0,
             warnings: 0,
         });
-        if (lspReconnectTimerRef.current !== null || lspReconnectCountRef.current >= 3) {
+        const reconnectDelay = getNextLspReconnectDelay(lspReconnectCountRef.current);
+        if (lspReconnectTimerRef.current !== null || reconnectDelay === undefined) {
             return;
         }
 
@@ -365,7 +366,7 @@ export function Playground() {
         lspReconnectTimerRef.current = setTimeout(() => {
             lspReconnectTimerRef.current = null;
             setLspCycle((cycle) => cycle + 1);
-        }, 750 * lspReconnectCountRef.current);
+        }, reconnectDelay);
     }, []);
 
     /**

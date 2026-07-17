@@ -171,7 +171,7 @@ function mergeCookies(current, setCookies) {
 async function createLspSession(cookie) {
     const files = [
         { name: "main.c", content: '#include "aaa.h"\nint main(void) { return missing; }\n' },
-        { name: "aaa.h", content: "int answer(void);\n" },
+        { name: "aaa.h", content: "" },
     ];
     const response = await fetch(`${httpOrigin}/api/lsp/sessions`, {
         method: "POST",
@@ -213,9 +213,17 @@ async function connectLspSession(cookie) {
         await new Promise((resolvePromise, reject) => {
             let initialized = false;
             let initialDiagnosticsSeen = false;
+            let finalHeaderSent = false;
+            let dependentDiagnosticResolved = false;
+            let headerVersion = 1;
+            let headerTypedLength = 0;
+            let nextRequestId = 1;
+            let completionResponses = 0;
+            let headerTypingTimer;
             const diagnosticEvents = [];
             const finish = (error) => {
                 clearTimeout(timeout);
+                clearTimeout(headerTypingTimer);
                 socket.off("open", handleOpen);
                 socket.off("message", handleMessage);
                 socket.off("close", handleClose);
@@ -228,7 +236,14 @@ async function connectLspSession(cookie) {
             };
             const handleError = (error) => finish(error);
             const handleClose = (code, reason) => {
-                finish(new Error(`LSP socket closed before diagnostics: ${code} ${reason.toString()}`));
+                finish(
+                    new Error(
+                        `LSP socket closed before diagnostics: ${code} ${reason.toString()} ` +
+                            `(initialized=${initialized}, initialDiagnosticsSeen=${initialDiagnosticsSeen}, ` +
+                            `headerTypedLength=${headerTypedLength}, finalHeaderSent=${finalHeaderSent}, ` +
+                            `completionResponses=${completionResponses})`,
+                    ),
+                );
             };
             const handleOpen = () => {
                 socket.send(
@@ -241,7 +256,81 @@ async function connectLspSession(cookie) {
                             rootPath: fileURLToPath(workspaceUri),
                             rootUri: workspaceUri,
                             workspaceFolders: [{ name: "workspace", uri: workspaceUri }],
-                            capabilities: {},
+                            capabilities: {
+                                textDocument: {
+                                    completion: {
+                                        completionItem: {
+                                            snippetSupport: true,
+                                        },
+                                        contextSupport: true,
+                                    },
+                                    publishDiagnostics: {
+                                        versionSupport: true,
+                                    },
+                                },
+                            },
+                        },
+                    }),
+                );
+            };
+
+            /**
+             * CodeMirror相当の全文変更と補完要求を送り、最後に有効なinclude guardへ確定します。
+             */
+            const sendNextHeaderChange = () => {
+                if (socket.readyState !== WebSocket.OPEN) {
+                    return;
+                }
+
+                const prefix = "#ifndef";
+                if (headerTypedLength < prefix.length) {
+                    headerTypedLength += 1;
+                    const text = prefix.slice(0, headerTypedLength);
+                    headerVersion += 1;
+                    socket.send(
+                        JSON.stringify({
+                            jsonrpc: "2.0",
+                            method: "textDocument/didChange",
+                            params: {
+                                textDocument: { uri: headerUri, version: headerVersion },
+                                contentChanges: [{ text }],
+                            },
+                        }),
+                    );
+
+                    const character = text.at(-1);
+                    if (character !== undefined && /[a-zA-Z_]/u.test(character)) {
+                        nextRequestId += 1;
+                        socket.send(
+                            JSON.stringify({
+                                jsonrpc: "2.0",
+                                id: nextRequestId,
+                                method: "textDocument/completion",
+                                params: {
+                                    textDocument: { uri: headerUri },
+                                    position: { line: 0, character: text.length },
+                                    context: { triggerKind: 1 },
+                                },
+                            }),
+                        );
+                    }
+                    headerTypingTimer = setTimeout(sendNextHeaderChange, 100);
+                    return;
+                }
+
+                headerVersion += 1;
+                finalHeaderSent = true;
+                socket.send(
+                    JSON.stringify({
+                        jsonrpc: "2.0",
+                        method: "textDocument/didChange",
+                        params: {
+                            textDocument: { uri: headerUri, version: headerVersion },
+                            contentChanges: [
+                                {
+                                    text: "#ifndef AAA_H\n#define AAA_H\n#define missing 0\n#endif\n",
+                                },
+                            ],
                         },
                     }),
                 );
@@ -301,17 +390,18 @@ async function connectLspSession(cookie) {
                         );
                         if (!initialDiagnosticsSeen && hasUndeclaredIdentifier) {
                             initialDiagnosticsSeen = true;
-                            socket.send(
-                                JSON.stringify({
-                                    jsonrpc: "2.0",
-                                    method: "textDocument/didChange",
-                                    params: {
-                                        textDocument: { uri: headerUri, version: 2 },
-                                        contentChanges: [{ text: "#define missing 0\n" }],
-                                    },
-                                }),
-                            );
-                        } else if (initialDiagnosticsSeen && !hasUndeclaredIdentifier) {
+                            headerTypingTimer = setTimeout(sendNextHeaderChange, 0);
+                        } else if (finalHeaderSent && !hasUndeclaredIdentifier) {
+                            dependentDiagnosticResolved = true;
+                            if (completionResponses > 0) {
+                                finish();
+                            }
+                        }
+                        return;
+                    }
+                    if (typeof message.id === "number" && message.id >= 2 && message.method === undefined) {
+                        completionResponses += 1;
+                        if (finalHeaderSent && dependentDiagnosticResolved) {
                             finish();
                         }
                         return;

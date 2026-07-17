@@ -92,6 +92,8 @@ export function createClangdEnvironment(workspacePath: string): NodeJS.ProcessEn
         TMPDIR: workspacePath,
         LANG: "C.UTF-8",
         LC_ALL: "C.UTF-8",
+        // RLIMIT_AS内で補完を反復してもmalloc arenaの仮想メモリ断片化を増やさないよう固定します。
+        MALLOC_ARENA_MAX: "1",
     };
 }
 
@@ -230,6 +232,9 @@ function createBubblewrapArguments(
         "--setenv",
         "LC_ALL",
         "C.UTF-8",
+        "--setenv",
+        "MALLOC_ARENA_MAX",
+        "1",
         "--",
         ...sandboxCommand,
     ];

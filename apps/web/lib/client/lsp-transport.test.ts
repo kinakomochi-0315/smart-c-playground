@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { countDiagnostics, DeferredDisposer, WebSocketLspTransport } from "@/lib/client/lsp-transport";
+import {
+    countDiagnostics,
+    DeferredDisposer,
+    getNextLspReconnectDelay,
+    WebSocketLspTransport,
+} from "@/lib/client/lsp-transport";
 
 /**
  * WebSocket TransportをNode環境で検証する最小fakeです。
@@ -197,6 +202,13 @@ describe("WebSocketLspTransport", () => {
 });
 
 describe("LSP helper", () => {
+    it("予期しない切断を3回まで段階的に再接続する", () => {
+        expect(getNextLspReconnectDelay(0)).toBe(750);
+        expect(getNextLspReconnectDelay(1)).toBe(1_500);
+        expect(getNextLspReconnectDelay(2)).toBe(2_250);
+        expect(getNextLspReconnectDelay(3)).toBeUndefined();
+    });
+
     it("errorとwarningだけを集計する", () => {
         expect(
             countDiagnostics([

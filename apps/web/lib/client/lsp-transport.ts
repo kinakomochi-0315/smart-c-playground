@@ -6,11 +6,20 @@ const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const SOCKET_CLOSED = 3;
 const DEFAULT_OPEN_TIMEOUT_MS = 10_000;
+const LSP_RECONNECT_BASE_DELAY_MS = 750;
+const LSP_MAX_RECONNECT_ATTEMPTS = 3;
 
 /**
  * LSP WebSocketが予期せず利用不能になった理由です。
  */
 export type LspDisconnectReason = "error" | "close" | "timeout";
+
+/**
+ * 完了済み再接続回数から次の待機時間を返し、上限到達後は再試行を止めます。
+ */
+export function getNextLspReconnectDelay(attempts: number): number | undefined {
+    return attempts >= LSP_MAX_RECONNECT_ATTEMPTS ? undefined : LSP_RECONNECT_BASE_DELAY_MS * (attempts + 1);
+}
 
 /**
  * React Strict Modeの直後の再setupで取り消せる、macrotask遅延破棄を管理します。

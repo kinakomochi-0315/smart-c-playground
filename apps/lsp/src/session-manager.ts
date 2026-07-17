@@ -25,6 +25,8 @@ const DEFAULT_MAX_SESSIONS_PER_IP = 2;
 const DEFAULT_IDLE_TTL_MS = 10 * 60 * 1_000;
 const DEFAULT_ABSOLUTE_TTL_MS = 30 * 60 * 1_000;
 const DEFAULT_TICKET_TTL_MS = 30_000;
+// ponytail: 固定待機時間で入力バーストをまとめる。診断遅延が実測で問題になった場合だけ調整する。
+const HEADER_REBUILD_DEBOUNCE_MS = 750;
 const PROCESS_SHUTDOWN_GRACE_MS = 1_000;
 
 /**
@@ -602,6 +604,8 @@ class JsonRpcWebSocketAdapter implements IWebSocket {
     readonly #onActivity: () => void;
     readonly #onViolation: (closeCode: number, closeReason: string) => void;
     #messageQueue = Promise.resolve();
+    #headerRebuildTimer: NodeJS.Timeout | undefined;
+    #headerRebuildGeneration = 0;
     #violated = false;
 
     /**
@@ -661,12 +665,11 @@ class JsonRpcWebSocketAdapter implements IWebSocket {
             }
 
             const documentUpdate = this.#guard.takeDocumentUpdate();
-            const translationUnits =
-                documentUpdate?.notifyDependents === true && this.#headerUris.has(documentUpdate.uri)
-                    ? this.#guard
-                          .openDocumentVersions()
-                          .filter((document) => this.#translationUnitUris.has(document.uri))
-                    : [];
+            const isHeaderUpdate =
+                documentUpdate !== null &&
+                documentUpdate.notifyDependents === true &&
+                this.#headerUris.has(documentUpdate.uri);
+            const rebuildGeneration = isHeaderUpdate ? this.#beginHeaderRebuild() : undefined;
             this.#messageQueue = this.#messageQueue
                 .then(async () => {
                     if (this.#violated) {
@@ -682,8 +685,8 @@ class JsonRpcWebSocketAdapter implements IWebSocket {
                     // ファイル反映後に同じ順序でclangdへ渡し、include解析との競合を防ぎます。
                     this.#onActivity();
                     callback(content);
-                    for (const translationUnit of translationUnits) {
-                        callback(createForceRebuild(translationUnit));
+                    if (rebuildGeneration !== undefined) {
+                        this.#scheduleHeaderRebuild(callback, rebuildGeneration);
                     }
                 })
                 .catch(() => {
@@ -703,16 +706,90 @@ class JsonRpcWebSocketAdapter implements IWebSocket {
      * WebSocket終了をJSON-RPC connectionへ通知します。
      */
     public onClose(callback: (code: number, reason: string) => void): void {
-        this.#webSocket.on("close", (code, reason) => callback(code, reason.toString("utf8")));
+        this.#webSocket.on("close", (code, reason) => {
+            this.#cancelHeaderRebuild();
+            callback(code, reason.toString("utf8"));
+        });
     }
 
     /**
      * adapter破棄時にWebSocketを閉じます。
      */
     public dispose(): void {
+        this.#cancelHeaderRebuild();
         if (this.#webSocket.readyState === WebSocket.OPEN) {
             this.#webSocket.close(1000, "Connection disposed");
         }
+    }
+
+    /**
+     * 新しいヘッダー変更を現在世代とし、古い再解析予約を無効化します。
+     */
+    #beginHeaderRebuild(): number {
+        this.#headerRebuildGeneration += 1;
+        this.#clearHeaderRebuildTimer();
+        return this.#headerRebuildGeneration;
+    }
+
+    /**
+     * 最後のヘッダー変更から750ms後に、最新の翻訳単位だけを再解析します。
+     */
+    #scheduleHeaderRebuild(callback: (data: unknown) => void, generation: number): void {
+        if (generation !== this.#headerRebuildGeneration) {
+            return;
+        }
+
+        this.#clearHeaderRebuildTimer();
+        const timer = setTimeout(() => {
+            if (this.#headerRebuildTimer === timer) {
+                this.#headerRebuildTimer = undefined;
+            }
+            this.#messageQueue = this.#messageQueue
+                .then(() => {
+                    if (
+                        this.#violated ||
+                        this.#webSocket.readyState !== WebSocket.OPEN ||
+                        generation !== this.#headerRebuildGeneration
+                    ) {
+                        return;
+                    }
+
+                    const translationUnits = this.#guard
+                        .openDocumentVersions()
+                        .filter((document) => this.#translationUnitUris.has(document.uri));
+                    if (translationUnits.length === 0) {
+                        return;
+                    }
+
+                    this.#onActivity();
+                    for (const translationUnit of translationUnits) {
+                        callback(createForceRebuild(translationUnit));
+                    }
+                })
+                .catch(() => {
+                    this.#reportViolation(1011, "Failed to synchronize LSP document");
+                });
+        }, HEADER_REBUILD_DEBOUNCE_MS);
+        timer.unref();
+        this.#headerRebuildTimer = timer;
+    }
+
+    /**
+     * 待機中のヘッダー再解析タイマーだけを解除します。
+     */
+    #clearHeaderRebuildTimer(): void {
+        if (this.#headerRebuildTimer !== undefined) {
+            clearTimeout(this.#headerRebuildTimer);
+            this.#headerRebuildTimer = undefined;
+        }
+    }
+
+    /**
+     * 待機中・キュー投入済みのヘッダー再解析を無効化します。
+     */
+    #cancelHeaderRebuild(): void {
+        this.#headerRebuildGeneration += 1;
+        this.#clearHeaderRebuildTimer();
     }
 
     /**
@@ -723,6 +800,7 @@ class JsonRpcWebSocketAdapter implements IWebSocket {
             return;
         }
         this.#violated = true;
+        this.#cancelHeaderRebuild();
         this.#onViolation(closeCode, closeReason);
     }
 }

@@ -48,6 +48,13 @@ test("productionではbubblewrap内/workspaceとprlimitを使う", () => {
     assert.ok(spec.arguments.includes("/usr/bin/prlimit"));
     assert.ok(spec.arguments.includes("--as=402653184:402653184"));
     assert.ok(spec.arguments.includes("--cpu=60:60"));
+    assert.deepEqual(
+        spec.arguments.slice(
+            spec.arguments.indexOf("MALLOC_ARENA_MAX") - 1,
+            spec.arguments.indexOf("MALLOC_ARENA_MAX") + 2,
+        ),
+        ["--setenv", "MALLOC_ARENA_MAX", "1"],
+    );
     assert.ok(spec.arguments.includes("/tmp/smart-c-lsp/hidden-sentinel"));
     assert.equal(createClangdDocumentUri("/tmp/smart-c-lsp/session", true, "main.c"), "file:///workspace/main.c");
     assert.equal(createClangdWorkspaceUri("/tmp/smart-c-lsp/session", true), "file:///workspace");
@@ -63,6 +70,7 @@ test("clangdへサービス秘密値を継承しない", () => {
         const environment = createClangdEnvironment("/tmp/session");
 
         assert.equal(environment.HOME, "/tmp/session");
+        assert.equal(environment.MALLOC_ARENA_MAX, "1");
         assert.equal(environment.INTERNAL_SERVICE_TOKEN, undefined);
         assert.equal(environment.SESSION_SIGNING_SECRET, undefined);
     } finally {
