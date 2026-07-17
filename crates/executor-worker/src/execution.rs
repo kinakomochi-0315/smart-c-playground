@@ -1,13 +1,17 @@
 use std::{
+    collections::HashSet,
     io::{Read, Write},
     path::Path,
     process::Stdio,
     time::{Duration, Instant},
 };
 
-use executor_protocol::v1::{
-    CompilerOutput, ErrorEvent, ExitEvent, ExitReason, JobAssignment, JobEvent, JobPhase,
-    OutputStream, PhaseEvent, WorkerMessage, job_event, worker_message,
+use executor_protocol::{
+    SOURCE_FILE_MAX_COUNT, SOURCE_FILES_MAX_BYTES, is_valid_source_file_name,
+    v1::{
+        CompilerOutput, ErrorEvent, ExitEvent, ExitReason, JobAssignment, JobEvent, JobPhase,
+        OutputStream, PhaseEvent, SourceFile, WorkerMessage, job_event, worker_message,
+    },
 };
 use portable_pty::{
     Child as PtyChild, CommandBuilder, ExitStatus as PtyExitStatus, PtySize, native_pty_system,
@@ -87,19 +91,18 @@ async fn execute_inner(
 ) -> Result<(), ExecutionError> {
     let job_id = Uuid::parse_str(&assignment.job_id)
         .map_err(|_| ExecutionError::InvalidAssignment("job_idがUUIDではありません"))?;
-    if assignment.source.is_empty() || assignment.source.len() > 64 * 1024 {
-        return Err(ExecutionError::InvalidAssignment(
-            "sourceは1〜65536バイトにしてください",
-        ));
-    }
-    if assignment.source.contains(&0) {
-        return Err(ExecutionError::InvalidAssignment(
-            "sourceにNUL文字は使用できません",
-        ));
-    }
+    validate_source_files(&assignment.files)?;
     let mut dimensions = Dimensions::try_from_assignment(&assignment)?;
     let workspace = JobWorkspace::new(&config.workspace_root, job_id)?;
-    tokio::fs::write(workspace.path().join("main.c"), &assignment.source).await?;
+    for file in &assignment.files {
+        tokio::fs::write(workspace.path().join(&file.name), &file.content).await?;
+    }
+    let source_files = assignment
+        .files
+        .iter()
+        .filter(|file| file.name.ends_with(".c"))
+        .map(|file| file.name.clone())
+        .collect::<Vec<_>>();
     let factory = CommandFactory::new(config.clone());
 
     send_phase(
@@ -111,8 +114,8 @@ async fn execute_inner(
     .await?;
     let compile_started = Instant::now();
     for command in [
-        factory.compile(workspace.path()),
-        factory.link(workspace.path()),
+        factory.compile(workspace.path(), &source_files),
+        factory.link(workspace.path(), &source_files),
     ] {
         let remaining = config
             .compile_timeout
@@ -239,6 +242,47 @@ async fn execute_inner(
         reason,
     )
     .await?;
+    Ok(())
+}
+
+/// Worker境界でファイル構造・名前・合計サイズを再検証します。
+fn validate_source_files(files: &[SourceFile]) -> Result<(), ExecutionError> {
+    if files.is_empty() || files.len() > SOURCE_FILE_MAX_COUNT {
+        return Err(ExecutionError::InvalidAssignment(
+            "filesは1〜16件にしてください",
+        ));
+    }
+
+    let mut names = HashSet::new();
+    let mut total_bytes = 0_usize;
+    let mut has_main = false;
+    for file in files {
+        if !is_valid_source_file_name(&file.name) {
+            return Err(ExecutionError::InvalidAssignment(
+                "安全な.cまたは.hのファイル名を指定してください",
+            ));
+        }
+        if !names.insert(file.name.to_ascii_lowercase()) {
+            return Err(ExecutionError::InvalidAssignment(
+                "同じファイル名を複数指定できません",
+            ));
+        }
+        if file.content.contains(&0) {
+            return Err(ExecutionError::InvalidAssignment(
+                "ファイル内容にNUL文字は使用できません",
+            ));
+        }
+        has_main |= file.name == "main.c";
+        total_bytes = total_bytes.saturating_add(file.content.len());
+    }
+    if !has_main {
+        return Err(ExecutionError::InvalidAssignment("main.cは必須です"));
+    }
+    if total_bytes == 0 || total_bytes > SOURCE_FILES_MAX_BYTES {
+        return Err(ExecutionError::InvalidAssignment(
+            "全ファイルの合計は1〜65536バイトにしてください",
+        ));
+    }
     Ok(())
 }
 
@@ -918,6 +962,26 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn assignment_file_validation_accepts_flat_multi_file_project() {
+        let files = vec![
+            SourceFile {
+                name: "main.c".to_owned(),
+                content: b"int main(void) { return answer(); }".to_vec(),
+            },
+            SourceFile {
+                name: "answer.h".to_owned(),
+                content: b"int answer(void);".to_vec(),
+            },
+            SourceFile {
+                name: "answer.c".to_owned(),
+                content: b"int answer(void) { return 0; }".to_vec(),
+            },
+        ];
+
+        assert!(validate_source_files(&files).is_ok());
+    }
 
     #[test]
     fn workspace_is_removed_when_guard_is_dropped() {

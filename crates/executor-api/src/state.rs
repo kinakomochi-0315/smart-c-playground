@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -8,10 +8,13 @@ use std::{
 };
 
 use bytes::Bytes;
-use executor_protocol::v1::{
-    ApiMessage, CancelJob, CompilerOutput, ErrorEvent, ExitEvent, JobAssignment, JobCommand,
-    JobEvent, JobPhase, OutputStream as ProtocolOutputStream, PhaseEvent, TerminalResize,
-    api_message, job_command, job_event,
+use executor_protocol::{
+    SOURCE_FILE_MAX_COUNT, SOURCE_FILES_MAX_BYTES, is_valid_source_file_name,
+    v1::{
+        ApiMessage, CancelJob, CompilerOutput, ErrorEvent, ExitEvent, JobAssignment, JobCommand,
+        JobEvent, JobPhase, OutputStream as ProtocolOutputStream, PhaseEvent,
+        SourceFile as ProtocolSourceFile, TerminalResize, api_message, job_command, job_event,
+    },
 };
 use tokio::sync::{Mutex, Notify, RwLock, broadcast, mpsc};
 use tonic::Status;
@@ -21,12 +24,11 @@ use crate::{
     config::AppConfig,
     model::{
         ApiError, CreateExecutionRequest, ExecutionPhase, ExitReason, OutputStream, ServerMessage,
-        TerminalSize,
+        SourceFile, TerminalSize,
     },
     ticket::{IssuedTicket, TicketSigner},
 };
 
-const SOURCE_LIMIT_BYTES: usize = 64 * 1024;
 const COMPILER_OUTPUT_LIMIT_BYTES: usize = 256 * 1024;
 const TERMINAL_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
 
@@ -49,7 +51,7 @@ impl BrowserEvent {
 /// 実行セッションの共有状態です。
 pub(crate) struct Session {
     pub(crate) id: Uuid,
-    pub(crate) source: Bytes,
+    pub(crate) files: Vec<SourceFile>,
     pub(crate) visitor_id: String,
     pub(crate) client_ip: String,
     pub(crate) path: String,
@@ -155,7 +157,7 @@ impl AppState {
         let (events, _) = broadcast::channel(256);
         let session = Arc::new(Session {
             id,
-            source: Bytes::from(request.source),
+            files: request.files,
             visitor_id: request.visitor_id,
             client_ip: request.client_ip,
             path,
@@ -851,9 +853,16 @@ impl AppState {
         let message = ApiMessage {
             payload: Some(api_message::Payload::Assignment(JobAssignment {
                 job_id: job_id.to_string(),
-                source: session.source.to_vec(),
                 terminal_cols: u32::from(session.terminal.cols),
                 terminal_rows: u32::from(session.terminal.rows),
+                files: session
+                    .files
+                    .iter()
+                    .map(|file| ProtocolSourceFile {
+                        name: file.name.clone(),
+                        content: file.content.as_bytes().to_vec(),
+                    })
+                    .collect(),
             })),
         };
         let mut inner = session.inner.lock().await;
@@ -1047,20 +1056,54 @@ impl AppState {
 }
 
 fn validate_request(request: &CreateExecutionRequest) -> Result<(), ApiError> {
-    if request.source.is_empty() {
+    if request.files.is_empty() || request.files.len() > SOURCE_FILE_MAX_COUNT {
+        return Err(ApiError::bad_request(
+            "source_files_count_invalid",
+            format!("ファイル数は1から{SOURCE_FILE_MAX_COUNT}件にしてください"),
+        ));
+    }
+
+    let mut names = HashSet::new();
+    let mut total_bytes = 0_usize;
+    let mut has_main = false;
+    for file in &request.files {
+        if !is_valid_source_file_name(&file.name) {
+            return Err(ApiError::bad_request(
+                "source_file_name_invalid",
+                "ファイル名は英数字、ハイフン、アンダースコアを使った.cまたは.hにしてください",
+            ));
+        }
+        if !names.insert(file.name.to_ascii_lowercase()) {
+            return Err(ApiError::bad_request(
+                "source_file_name_duplicate",
+                "同じファイル名を複数指定できません",
+            ));
+        }
+        if file.content.contains('\0') {
+            return Err(ApiError::bad_request(
+                "source_contains_nul",
+                "ファイル内容にNUL文字は使用できません",
+            ));
+        }
+        has_main |= file.name == "main.c";
+        total_bytes = total_bytes.saturating_add(file.content.len());
+    }
+    if !has_main {
+        return Err(ApiError::bad_request(
+            "main_source_missing",
+            "main.cは必須です",
+        ));
+    }
+    if total_bytes == 0 {
         return Err(ApiError::bad_request(
             "source_empty",
             "C言語ソースを入力してください",
         ));
     }
-    if request.source.contains('\0') {
-        return Err(ApiError::bad_request(
-            "source_contains_nul",
-            "C言語ソースにNUL文字は使用できません",
+    if total_bytes > SOURCE_FILES_MAX_BYTES {
+        return Err(ApiError::too_large(
+            "全ファイルの合計は64KiB以下にしてください",
         ));
-    }
-    if request.source.len() > SOURCE_LIMIT_BYTES {
-        return Err(ApiError::too_large("C言語ソースは64KiB以下にしてください"));
     }
     if request.visitor_id.is_empty() || request.visitor_id.len() > 128 {
         return Err(ApiError::bad_request(
@@ -1168,7 +1211,10 @@ mod tests {
 
     fn request(visitor: &str, ip: &str) -> CreateExecutionRequest {
         CreateExecutionRequest {
-            source: "int main(void) { return 0; }".to_owned(),
+            files: vec![SourceFile {
+                name: "main.c".to_owned(),
+                content: "int main(void) { return 0; }".to_owned(),
+            }],
             terminal: TerminalSize {
                 cols: 100,
                 rows: 30,
@@ -1176,6 +1222,17 @@ mod tests {
             visitor_id: visitor.to_owned(),
             client_ip: ip.to_owned(),
         }
+    }
+
+    #[test]
+    fn source_file_validation_rejects_paths_and_missing_main() {
+        let mut invalid_path = request("visitor", "192.0.2.1");
+        invalid_path.files[0].name = "../main.c".to_owned();
+        assert!(validate_request(&invalid_path).is_err());
+
+        let mut missing_main = request("visitor", "192.0.2.1");
+        missing_main.files[0].name = "aaa.c".to_owned();
+        assert!(validate_request(&missing_main).is_err());
     }
 
     #[tokio::test]

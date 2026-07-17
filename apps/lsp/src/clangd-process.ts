@@ -69,9 +69,9 @@ export function createClangdProcessSpec(options: ClangdProcessOptions): ClangdPr
 /**
  * ブラウザとsandbox内clangdが共有するmain.c URIを返します。
  */
-export function createClangdDocumentUri(workspacePath: string, sandboxEnabled: boolean): string {
+export function createClangdDocumentUri(workspacePath: string, sandboxEnabled: boolean, fileName: string): string {
     const clangdWorkspacePath = sandboxEnabled ? SANDBOX_WORKSPACE_PATH : resolve(workspacePath);
-    return pathToFileURL(join(clangdWorkspacePath, "main.c")).href;
+    return pathToFileURL(join(clangdWorkspacePath, fileName)).href;
 }
 
 /**
@@ -96,7 +96,7 @@ export function createClangdEnvironment(workspacePath: string): NodeJS.ProcessEn
 }
 
 /**
- * 単一ファイルC17用途に不要なclangd機能と出力量を抑えた引数を返します。
+ * C17学習用途に不要なclangd機能と出力量を抑えた引数を返します。
  */
 function createClangdArguments(workspacePath: string): string[] {
     return [

@@ -1,4 +1,4 @@
-import { MAX_SOURCE_BYTES } from "@/lib/server/http";
+import { isValidSourceFileName, SOURCE_FILE_MAX_COUNT, SOURCE_MAX_BYTES, type CSourceFile } from "@smart-c/contracts";
 import type { ExecutionRequest, LspSessionRequest } from "@/types/wire";
 
 export interface ValidationResult<T> {
@@ -16,27 +16,56 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * C言語ソースの型とUTF-8バイト数を検証します。
  */
-function validateSource(source: unknown): ValidationResult<string> {
-    if (typeof source !== "string") {
+function validateFiles(files: unknown): ValidationResult<CSourceFile[]> {
+    if (!Array.isArray(files)) {
         return {
-            error: "sourceには文字列を指定してください。",
+            error: "filesにはファイルの配列を指定してください。",
+        };
+    }
+    if (files.length === 0 || files.length > SOURCE_FILE_MAX_COUNT) {
+        return {
+            error: `ファイル数は1から${SOURCE_FILE_MAX_COUNT}件にしてください。`,
         };
     }
 
-    if (Buffer.byteLength(source, "utf8") > MAX_SOURCE_BYTES) {
+    const names = new Set<string>();
+    let totalBytes = 0;
+    const validated: CSourceFile[] = [];
+    for (const file of files) {
+        if (!isRecord(file) || !isValidSourceFileName(file.name)) {
+            return {
+                error: "ファイル名は英数字、ハイフン、アンダースコアを使った.cまたは.hにしてください。",
+            };
+        }
+        if (typeof file.content !== "string" || file.content.includes("\0")) {
+            return {
+                error: "ファイル内容にはNUL文字を含まない文字列を指定してください。",
+            };
+        }
+
+        const normalizedName = file.name.toLowerCase();
+        if (names.has(normalizedName)) {
+            return {
+                error: "同じファイル名を複数指定できません。",
+            };
+        }
+        names.add(normalizedName);
+        totalBytes += Buffer.byteLength(file.content, "utf8");
+        validated.push({ name: file.name, content: file.content });
+    }
+    if (!names.has("main.c")) {
         return {
-            error: "C言語ソースは64KiB以内にしてください。",
+            error: "main.cは削除できません。",
         };
     }
-
-    if (source.includes("\0")) {
+    if (totalBytes > SOURCE_MAX_BYTES) {
         return {
-            error: "C言語ソースにNUL文字は使用できません。",
+            error: "全ファイルの合計は64KiB以内にしてください。",
         };
     }
 
     return {
-        value: source,
+        value: validated,
     };
 }
 
@@ -50,16 +79,16 @@ export function validateLspSessionRequest(value: unknown): ValidationResult<LspS
         };
     }
 
-    const source = validateSource(value.source);
-    if (source.error !== undefined || source.value === undefined) {
+    const files = validateFiles(value.files);
+    if (files.error !== undefined || files.value === undefined) {
         return {
-            error: source.error,
+            error: files.error,
         };
     }
 
     return {
         value: {
-            source: source.value,
+            files: files.value,
         },
     };
 }
@@ -74,10 +103,10 @@ export function validateExecutionRequest(value: unknown): ValidationResult<Execu
         };
     }
 
-    const source = validateSource(value.source);
-    if (source.error !== undefined || source.value === undefined) {
+    const files = validateFiles(value.files);
+    if (files.error !== undefined || files.value === undefined) {
         return {
-            error: source.error,
+            error: files.error,
         };
     }
 
@@ -104,7 +133,7 @@ export function validateExecutionRequest(value: unknown): ValidationResult<Execu
 
     return {
         value: {
-            source: source.value,
+            files: files.value,
             terminal: {
                 cols,
                 rows,

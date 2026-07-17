@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { InternalCreateLspSessionRequest, InternalCreateLspSessionResponse } from "@smart-c/contracts";
@@ -15,7 +15,7 @@ import type { IWebSocket } from "vscode-ws-jsonrpc";
 import { WebSocket } from "ws";
 
 import { createClangdDocumentUri, createClangdProcessSpec, createClangdWorkspaceUri } from "./clangd-process.js";
-import { LspJsonRpcGuard } from "./json-rpc-guard.js";
+import { LspJsonRpcGuard, type LspDocumentUpdate, type LspOpenDocumentVersion } from "./json-rpc-guard.js";
 import { TicketService } from "./ticket.js";
 
 const COMPILE_FLAGS = "-xc\n-std=c17\n-Wall\n-Wextra\n-Wpedantic\n";
@@ -98,7 +98,7 @@ interface ManagedSession {
     visitorId: string;
     clientIp: string;
     workspacePath: string;
-    documentUri: string;
+    documentUris: Record<string, string>;
     workspaceUri: string;
     webSocketPath: string;
     ticketNonce: string;
@@ -172,7 +172,9 @@ export class LspSessionManager {
         try {
             await mkdir(workspacePath, { recursive: true, mode: 0o700 });
             await Promise.all([
-                writeFile(join(workspacePath, "main.c"), request.source, { encoding: "utf8", mode: 0o600 }),
+                ...request.files.map((file) =>
+                    writeFile(join(workspacePath, file.name), file.content, { encoding: "utf8", mode: 0o600 }),
+                ),
                 writeFile(join(workspacePath, "compile_flags.txt"), COMPILE_FLAGS, {
                     encoding: "utf8",
                     mode: 0o600,
@@ -187,12 +189,20 @@ export class LspSessionManager {
                 this.#ticketTtlMs,
             );
             const createdAt = this.#now();
+            const sandboxEnabled = this.#clangdSandboxPath !== undefined;
+            const workspaceUri = createClangdWorkspaceUri(workspacePath, sandboxEnabled);
+            const documentUris = Object.fromEntries(
+                request.files.map((file) => [
+                    file.name,
+                    createClangdDocumentUri(workspacePath, sandboxEnabled, file.name),
+                ]),
+            );
             const session = this.#createManagedSession(
                 sessionId,
                 request,
                 workspacePath,
-                createClangdDocumentUri(workspacePath, this.#clangdSandboxPath !== undefined),
-                createClangdWorkspaceUri(workspacePath, this.#clangdSandboxPath !== undefined),
+                documentUris,
+                workspaceUri,
                 webSocketPath,
                 issuedTicket.payload.nonce,
             );
@@ -200,7 +210,8 @@ export class LspSessionManager {
 
             return {
                 id: sessionId,
-                documentUri: session.documentUri,
+                workspaceUri: session.workspaceUri,
+                documentUris: session.documentUris,
                 webSocketPath,
                 expiresAt: new Date(createdAt + this.#absoluteTtlMs).toISOString(),
                 ticket: issuedTicket.ticket,
@@ -303,12 +314,41 @@ export class LspSessionManager {
 
         session.state = "connected";
         session.webSocket = webSocket;
+        const documentPaths = new Map(
+            Object.entries(session.documentUris).map(([fileName, documentUri]) => [
+                documentUri,
+                join(session.workspacePath, fileName),
+            ]),
+        );
+        const headerUris = new Set(
+            Object.entries(session.documentUris)
+                .filter(([fileName]) => fileName.endsWith(".h"))
+                .map(([, documentUri]) => documentUri),
+        );
+        const translationUnitUris = new Set(
+            Object.entries(session.documentUris)
+                .filter(([fileName]) => fileName.endsWith(".c"))
+                .map(([, documentUri]) => documentUri),
+        );
         const adapter = new JsonRpcWebSocketAdapter(
             webSocket,
             new LspJsonRpcGuard({
-                documentUri: session.documentUri,
+                documentUris: Object.values(session.documentUris),
                 workspaceUri: session.workspaceUri,
             }),
+            headerUris,
+            translationUnitUris,
+            async (update) => {
+                const documentPath = documentPaths.get(update.uri);
+                if (documentPath === undefined) {
+                    throw new Error("LSP document path is unavailable");
+                }
+
+                // 原子的に置換し、同サイズ・短時間の変更も旧clangdへ確実に認識させます。
+                const stagingPath = `${documentPath}.next`;
+                await writeFile(stagingPath, update.text, { encoding: "utf8", mode: 0o600 });
+                await rename(stagingPath, documentPath);
+            },
             () => this.#touchSession(sessionId),
             (closeCode, closeReason) => {
                 void this.closeSession(sessionId, closeCode, closeReason);
@@ -429,7 +469,7 @@ export class LspSessionManager {
         sessionId: string,
         request: InternalCreateLspSessionRequest,
         workspacePath: string,
-        documentUri: string,
+        documentUris: Record<string, string>,
         workspaceUri: string,
         webSocketPath: string,
         ticketNonce: string,
@@ -439,7 +479,7 @@ export class LspSessionManager {
             visitorId: request.visitorId,
             clientIp: request.clientIp,
             workspacePath,
-            documentUri,
+            documentUris,
             workspaceUri,
             webSocketPath,
             ticketNonce,
@@ -556,8 +596,12 @@ export class LspSessionManager {
 class JsonRpcWebSocketAdapter implements IWebSocket {
     readonly #webSocket: WebSocket;
     readonly #guard: LspJsonRpcGuard;
+    readonly #headerUris: ReadonlySet<string>;
+    readonly #translationUnitUris: ReadonlySet<string>;
+    readonly #onDocumentUpdate: (update: LspDocumentUpdate) => Promise<void>;
     readonly #onActivity: () => void;
     readonly #onViolation: (closeCode: number, closeReason: string) => void;
+    #messageQueue = Promise.resolve();
     #violated = false;
 
     /**
@@ -566,11 +610,17 @@ class JsonRpcWebSocketAdapter implements IWebSocket {
     public constructor(
         webSocket: WebSocket,
         guard: LspJsonRpcGuard,
+        headerUris: ReadonlySet<string>,
+        translationUnitUris: ReadonlySet<string>,
+        onDocumentUpdate: (update: LspDocumentUpdate) => Promise<void>,
         onActivity: () => void,
         onViolation: (closeCode: number, closeReason: string) => void,
     ) {
         this.#webSocket = webSocket;
         this.#guard = guard;
+        this.#headerUris = headerUris;
+        this.#translationUnitUris = translationUnitUris;
+        this.#onDocumentUpdate = onDocumentUpdate;
         this.#onActivity = onActivity;
         this.#onViolation = onViolation;
     }
@@ -610,8 +660,35 @@ class JsonRpcWebSocketAdapter implements IWebSocket {
                 return;
             }
 
-            this.#onActivity();
-            callback(content);
+            const documentUpdate = this.#guard.takeDocumentUpdate();
+            const translationUnits =
+                documentUpdate?.notifyDependents === true && this.#headerUris.has(documentUpdate.uri)
+                    ? this.#guard
+                          .openDocumentVersions()
+                          .filter((document) => this.#translationUnitUris.has(document.uri))
+                    : [];
+            this.#messageQueue = this.#messageQueue
+                .then(async () => {
+                    if (this.#violated) {
+                        return;
+                    }
+                    if (documentUpdate !== null) {
+                        await this.#onDocumentUpdate(documentUpdate);
+                    }
+                    if (this.#violated || this.#webSocket.readyState !== WebSocket.OPEN) {
+                        return;
+                    }
+
+                    // ファイル反映後に同じ順序でclangdへ渡し、include解析との競合を防ぎます。
+                    this.#onActivity();
+                    callback(content);
+                    for (const translationUnit of translationUnits) {
+                        callback(createForceRebuild(translationUnit));
+                    }
+                })
+                .catch(() => {
+                    this.#reportViolation(1011, "Failed to synchronize LSP document");
+                });
         });
     }
 
@@ -648,6 +725,22 @@ class JsonRpcWebSocketAdapter implements IWebSocket {
         this.#violated = true;
         this.#onViolation(closeCode, closeReason);
     }
+}
+
+/**
+ * ヘッダーの依存元を内容変更なしで再解析させるclangd通知を作成します。
+ */
+function createForceRebuild(document: LspOpenDocumentVersion): string {
+    return JSON.stringify({
+        jsonrpc: "2.0",
+        method: "textDocument/didChange",
+        params: {
+            textDocument: document,
+            contentChanges: [],
+            forceRebuild: true,
+            wantDiagnostics: true,
+        },
+    });
 }
 
 /**

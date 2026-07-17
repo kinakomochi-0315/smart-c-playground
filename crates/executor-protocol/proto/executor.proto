@@ -42,9 +42,17 @@ message WorkerHeartbeat {
 // 新しいC言語ジョブをWorkerへ割り当てます。
 message JobAssignment {
     string job_id = 1;
-    bytes source = 2;
+    reserved 2;
+    reserved "source";
     uint32 terminal_cols = 3;
     uint32 terminal_rows = 4;
+    repeated SourceFile files = 5;
+}
+
+// フラットなCプロジェクトを構成する1ファイルです。
+message SourceFile {
+    string name = 1;
+    bytes content = 2;
 }
 
 // 実行中ジョブへ送る操作です。

@@ -38,6 +38,7 @@ WORKDIR /app
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/lsp/node_modules ./apps/lsp/node_modules
+COPY --from=build /app/packages/contracts ./packages/contracts
 COPY --from=build /app/apps/lsp/package.json ./apps/lsp/package.json
 COPY --from=build /app/apps/lsp/dist ./apps/lsp/dist
 

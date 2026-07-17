@@ -19,7 +19,7 @@ test("direct開発時は実workspaceでclangdを起動する", () => {
     assert.ok(spec.arguments.includes("--compile-commands-dir=/tmp/session"));
     assert.ok(spec.arguments.includes("--enable-config=false"));
     assert.ok(spec.arguments.includes("-j=1"));
-    assert.equal(createClangdDocumentUri("/tmp/session", false), "file:///tmp/session/main.c");
+    assert.equal(createClangdDocumentUri("/tmp/session", false, "aaa.h"), "file:///tmp/session/aaa.h");
     assert.equal(createClangdWorkspaceUri("/tmp/session", false), "file:///tmp/session");
 });
 
@@ -49,7 +49,7 @@ test("productionではbubblewrap内/workspaceとprlimitを使う", () => {
     assert.ok(spec.arguments.includes("--as=402653184:402653184"));
     assert.ok(spec.arguments.includes("--cpu=60:60"));
     assert.ok(spec.arguments.includes("/tmp/smart-c-lsp/hidden-sentinel"));
-    assert.equal(createClangdDocumentUri("/tmp/smart-c-lsp/session", true), "file:///workspace/main.c");
+    assert.equal(createClangdDocumentUri("/tmp/smart-c-lsp/session", true, "main.c"), "file:///workspace/main.c");
     assert.equal(createClangdWorkspaceUri("/tmp/smart-c-lsp/session", true), "file:///workspace");
 });
 

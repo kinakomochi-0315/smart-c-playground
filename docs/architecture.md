@@ -2,7 +2,7 @@
 
 ## 目的
 
-このプロジェクトは、ブラウザで `main.c` を編集し、clangdによる補完・診断と、標準入出力を使った対話実行を提供します。C言語以外、複数ファイル、完全なシェル端末は扱いません。
+このプロジェクトは、ブラウザで同一階層の `.c` / `.h` を編集し、clangdによる補完・診断と、標準入出力を使った対話実行を提供します。C言語以外、サブディレクトリ、完全なシェル端末は扱いません。
 
 ## サービス境界
 
@@ -36,9 +36,9 @@ flowchart LR
 
 ## LSPフロー
 
-1. ブラウザが現在のソースを `POST /api/lsp/sessions` へ送ります。
+1. ブラウザが現在の全ファイルを `POST /api/lsp/sessions` へ送ります。
 2. Next.jsはvisitorと接続元IPを追加して、Honoの内部APIへ転送します。
-3. Honoはtmpfsに `main.c` と固定の `compile_flags.txt` を作ります。
+3. Honoはtmpfsに全ファイルと固定の `compile_flags.txt` を作ります。
 4. Next.jsはHonoが発行した30秒・一回限りのticketをHttpOnly Cookieへ設定します。
 5. CodeMirror LSP Clientは同一オリジンの `/ws/lsp/{id}` へ接続します。
 6. Honoはclangdを起動し、WebSocket JSON-RPCと標準入出力を相互転送します。
@@ -46,10 +46,10 @@ flowchart LR
 
 ## 実行フロー
 
-1. ブラウザがコードと端末サイズを `POST /api/executions` へ送ります。
+1. ブラウザが全ファイルと端末サイズを `POST /api/executions` へ送ります。
 2. Next.jsとexecutor-apiがサイズ、レート、同時実行数を検証します。
 3. executor-apiは短命ticketを発行し、WebSocket接続後にジョブをキューへ入れます。
-4. 空きWorkerがcompile jailでClang C17を実行し、利用者の `main.o` とWorkerイメージ内の信頼済み `runtime-support.o` を静的リンクして、静的実行ファイルを生成します。
+4. 空きWorkerがcompile jailで全 `.c` を一度にClang C17でコンパイルし、Workerイメージ内の信頼済み `runtime-support.o`、全ユーザーobjectの順で静的リンクして実行ファイルを生成します。
 5. `runtime-support.o` のconstructorが `main` より前にruntime stdoutを無バッファ化した後、別のruntime jailでPTYへ接続して実行します。
 6. binary WebSocket frameは端末bytes、text frameはphase・終了・制御JSONとして扱います。
 7. 終了、停止、切断、制限超過の全経路でプロセスグループとworkspaceを破棄します。

@@ -111,7 +111,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         `${baseUrl}/internal/executions`,
         process.env.EXECUTOR_INTERNAL_TOKEN ?? process.env.INTERNAL_SHARED_TOKEN ?? process.env.INTERNAL_SERVICE_TOKEN,
         {
-            source: validation.value.source,
+            files: validation.value.files,
             terminal: validation.value.terminal,
             visitorId: identity.id,
             clientIp,

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { countDiagnostics, DeferredDisposer, getLspRootUri, WebSocketLspTransport } from "@/lib/client/lsp-transport";
+import { countDiagnostics, DeferredDisposer, WebSocketLspTransport } from "@/lib/client/lsp-transport";
 
 /**
  * WebSocket TransportをNode環境で検証する最小fakeです。
@@ -166,8 +166,10 @@ describe("WebSocketLspTransport", () => {
 
         transport.dispose();
         transport.dispose();
+        const closed = transport.waitUntilClosed();
         socket.disconnect();
 
+        await closed;
         expect(transport.isDisposed).toBe(true);
         expect(socket.closeCalls).toEqual([{ code: 1000, reason: "client dispose" }]);
         expect(onUnexpectedDisconnect).not.toHaveBeenCalled();
@@ -195,15 +197,6 @@ describe("WebSocketLspTransport", () => {
 });
 
 describe("LSP helper", () => {
-    it("document URI末尾の/main.cだけを除いてroot URIを返す", () => {
-        expect(getLspRootUri("file:///workspace/main.c")).toBe("file:///workspace");
-        expect(getLspRootUri("file:///tmp/session-id/main.c")).toBe("file:///tmp/session-id");
-    });
-
-    it("単一main.c契約から外れるdocument URIを拒否する", () => {
-        expect(() => getLspRootUri("file:///workspace/other.c")).toThrow("/main.c");
-    });
-
     it("errorとwarningだけを集計する", () => {
         expect(
             countDiagnostics([

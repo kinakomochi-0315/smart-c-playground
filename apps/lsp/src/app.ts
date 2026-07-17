@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 
-import type { InternalCreateLspSessionRequest, ProblemDetails } from "@smart-c/contracts";
+import { isValidSourceFiles, type InternalCreateLspSessionRequest, type ProblemDetails } from "@smart-c/contracts";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -8,7 +8,6 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { HealthProvider } from "./health.js";
 import { LspSessionManager, SessionLimitError } from "./session-manager.js";
 
-const SOURCE_MAX_BYTES = 64 * 1024;
 const REQUEST_MAX_BYTES = 512 * 1024;
 const VISITOR_ID_MAX_LENGTH = 128;
 const CLIENT_IP_MAX_LENGTH = 128;
@@ -194,18 +193,9 @@ function isCreateSessionRequest(value: unknown): value is InternalCreateLspSessi
     }
 
     return (
-        isValidSource(value.source) &&
+        isValidSourceFiles(value.files) &&
         isBoundedString(value.visitorId, VISITOR_ID_MAX_LENGTH) &&
         isBoundedString(value.clientIp, CLIENT_IP_MAX_LENGTH)
-    );
-}
-
-/**
- * CソースのサイズとNUL文字を検証します。
- */
-function isValidSource(source: unknown): source is string {
-    return (
-        typeof source === "string" && !source.includes("\0") && Buffer.byteLength(source, "utf8") <= SOURCE_MAX_BYTES
     );
 }
 

@@ -1,19 +1,20 @@
 # ✨かしこい✨C言語実行環境
 
-ブラウザ上で単一の `main.c` を編集し、clangdによる補完・実行前診断と、標準入出力を使った対話実行を行えるC17専用のWebアプリケーションです。
+ブラウザ上で同一階層の `.c` / `.h` を編集し、clangdによる補完・実行前診断と、標準入出力を使った対話実行を行えるC17専用のWebアプリケーションです。
 
 ## 主な機能
 
 - CodeMirror 6によるC言語編集
+- ファイルタブによる `.c` / `.h` の作成、名前変更、削除
 - clangdによる補完、ホバー、診断
 - xterm.jsとPTYによる `scanf`、`fgets`、`getchar` などの対話入出力
-- Clang C17によるコンパイル
+- 全 `.c` を対象としたClang C17の自動コンパイル・リンク
 - 短命・一回限りのHttpOnly WebSocket ticket
 - visitor/IP単位のレート制限と同時実行制限
 - Docker Composeによる一体型デプロイ
 - ProductionでのNsJail、seccomp、rlimit、Docker resource limit
 
-C言語以外、複数ファイル、シェル、raw mode、ncursesは対象外です。
+C言語以外、サブディレクトリ、シェル、raw mode、ncursesは対象外です。
 
 ## 構成
 
@@ -126,7 +127,7 @@ Docker Desktop上のarm64/Linux VMでは上記smokeを確認済みですが、na
 
 | 対象              |                                 上限 |
 | ----------------- | -----------------------------------: |
-| ソース            |                                64KiB |
+| ファイル          |                  最大16件、合計64KiB |
 | コンパイル        |             wall 5秒 / memory 512MiB |
 | 実行              | CPU 3秒 / wall 120秒 / memory 128MiB |
 | 端末出力          |                                 1MiB |

@@ -11,14 +11,24 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateExecutionRequest {
-    /// コンパイルするC言語ソースです。
-    pub source: String,
+    /// コンパイルするフラットなCプロジェクトです。
+    pub files: Vec<SourceFile>,
     /// 初期PTYサイズです。
     pub terminal: TerminalSize,
     /// BFFが発行した匿名visitor識別子です。
     pub visitor_id: String,
     /// BFFが正規化した接続元IPです。
     pub client_ip: String,
+}
+
+/// フラットなCプロジェクトを構成する1ファイルです。
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceFile {
+    /// 同一階層へ配置するファイル名です。
+    pub name: String,
+    /// UTF-8のファイル内容です。
+    pub content: String,
 }
 
 /// PTYの表示サイズです。

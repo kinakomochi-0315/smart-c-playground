@@ -21,7 +21,7 @@ function message(value: object): string {
  */
 function createInitializedGuard(overrides: Partial<ConstructorParameters<typeof LspJsonRpcGuard>[0]> = {}) {
     const guard = new LspJsonRpcGuard({
-        documentUri: DOCUMENT_URI,
+        documentUris: [DOCUMENT_URI],
         workspaceUri: WORKSPACE_URI,
         ...overrides,
     });
@@ -45,6 +45,7 @@ function createInitializedGuard(overrides: Partial<ConstructorParameters<typeof 
         ),
         { accepted: true },
     );
+    assert.equal(guard.takeDocumentUpdate(), null);
     assert.deepEqual(
         guard.validateClientMessage(
             message({
@@ -79,6 +80,12 @@ test("単一main.cのopen・増分変更・completionを許可する", () => {
         ),
         { accepted: true },
     );
+    assert.deepEqual(guard.takeDocumentUpdate(), {
+        uri: DOCUMENT_URI,
+        text: "abc\n",
+        notifyDependents: false,
+    });
+    assert.deepEqual(guard.openDocumentVersions(), [{ uri: DOCUMENT_URI, version: 1 }]);
     assert.deepEqual(
         guard.validateClientMessage(
             message({
@@ -102,6 +109,12 @@ test("単一main.cのopen・増分変更・completionを許可する", () => {
         ),
         { accepted: true },
     );
+    assert.deepEqual(guard.takeDocumentUpdate(), {
+        uri: DOCUMENT_URI,
+        text: "abcdef\n",
+        notifyDependents: true,
+    });
+    assert.deepEqual(guard.openDocumentVersions(), [{ uri: DOCUMENT_URI, version: 2 }]);
     assert.deepEqual(
         guard.validateClientMessage(
             message({
@@ -119,6 +132,45 @@ test("単一main.cのopen・増分変更・completionを許可する", () => {
             }),
         ),
         { accepted: true },
+    );
+    assert.equal(guard.takeDocumentUpdate(), null);
+});
+
+test("複数文書を許可し、合計64KiB相当の上限を適用する", () => {
+    const headerUri = "file:///tmp/session/aaa.h";
+    const guard = createInitializedGuard({
+        documentUris: [DOCUMENT_URI, headerUri],
+        maxDocumentBytes: 8,
+    });
+
+    for (const [uri, text] of [
+        [DOCUMENT_URI, "main"],
+        [headerUri, "head"],
+    ]) {
+        assert.deepEqual(
+            guard.validateClientMessage(
+                message({
+                    method: "textDocument/didOpen",
+                    params: {
+                        textDocument: { uri, languageId: "c", version: 1, text },
+                    },
+                }),
+            ),
+            { accepted: true },
+        );
+    }
+
+    assert.equal(
+        guard.validateClientMessage(
+            message({
+                method: "textDocument/didChange",
+                params: {
+                    textDocument: { uri: headerUri, version: 2 },
+                    contentChanges: [{ text: "header" }],
+                },
+            }),
+        ).accepted,
+        false,
     );
 });
 
@@ -188,7 +240,7 @@ test("ifスニペット相当の単一変更後もcompletionを許可する", ()
 
 test("CodeMirror 6の初期化から診断までの一連のメッセージを許可する", () => {
     const guard = new LspJsonRpcGuard({
-        documentUri: DOCUMENT_URI,
+        documentUris: [DOCUMENT_URI],
         workspaceUri: WORKSPACE_URI,
     });
     const source = "int main(void) {\n    int x = 1;\n    return x;\n}\n";
@@ -414,7 +466,7 @@ test("initializeのrootUri・rootPath・workspaceFoldersをセッションworksp
         },
     ]) {
         const guard = new LspJsonRpcGuard({
-            documentUri: DOCUMENT_URI,
+            documentUris: [DOCUMENT_URI],
             workspaceUri: WORKSPACE_URI,
         });
         const result = guard.validateClientMessage(
@@ -428,7 +480,7 @@ test("initializeのrootUri・rootPath・workspaceFoldersをセッションworksp
     }
 
     const exactRootPathGuard = new LspJsonRpcGuard({
-        documentUri: DOCUMENT_URI,
+        documentUris: [DOCUMENT_URI],
         workspaceUri: WORKSPACE_URI,
     });
     assert.equal(
@@ -550,7 +602,7 @@ test("didChangeの変更件数とJSON構造量を制限する", () => {
     assert.equal(tooManyChanges.accepted, false);
 
     const excessiveNodesGuard = new LspJsonRpcGuard({
-        documentUri: DOCUMENT_URI,
+        documentUris: [DOCUMENT_URI],
         workspaceUri: WORKSPACE_URI,
     });
     const excessiveNodes = excessiveNodesGuard.validateClientMessage(
@@ -564,7 +616,7 @@ test("didChangeの変更件数とJSON構造量を制限する", () => {
 
 test("受信rateとセッション累積量を制限する", () => {
     const rateGuard = new LspJsonRpcGuard({
-        documentUri: DOCUMENT_URI,
+        documentUris: [DOCUMENT_URI],
         workspaceUri: WORKSPACE_URI,
         clientMaxMessagesPerWindow: 1,
     });
@@ -594,7 +646,7 @@ test("受信rateとセッション累積量を制限する", () => {
     });
 
     const bytesGuard = new LspJsonRpcGuard({
-        documentUri: DOCUMENT_URI,
+        documentUris: [DOCUMENT_URI],
         workspaceUri: WORKSPACE_URI,
         clientMaxSessionBytes: 8,
     });

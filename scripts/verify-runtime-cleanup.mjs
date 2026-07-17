@@ -169,7 +169,10 @@ function mergeCookies(current, setCookies) {
  * 診断を1件以上返すC17ソースでLSPセッションを公開APIから作成します。
  */
 async function createLspSession(cookie) {
-    const source = "int main(void) {\n    return missing;\n}\n";
+    const files = [
+        { name: "main.c", content: '#include "aaa.h"\nint main(void) { return missing; }\n' },
+        { name: "aaa.h", content: "int answer(void);\n" },
+    ];
     const response = await fetch(`${httpOrigin}/api/lsp/sessions`, {
         method: "POST",
         headers: {
@@ -177,7 +180,7 @@ async function createLspSession(cookie) {
             Origin: httpOrigin,
             ...(cookie === "" ? {} : { Cookie: cookie }),
         },
-        body: JSON.stringify({ source }),
+        body: JSON.stringify({ files }),
     });
     const text = await response.text();
     if (!response.ok) {
@@ -185,19 +188,20 @@ async function createLspSession(cookie) {
     }
 
     return {
-        source,
+        files,
         session: JSON.parse(text),
         cookie: mergeCookies(cookie, response.headers.getSetCookie()),
     };
 }
 
 /**
- * LSP WebSocketを初期化し、main.cのdiagnostics受信まで待機します。
+ * LSP WebSocketを初期化し、header編集でmain.cのdiagnosticsが解消するまで待機します。
  */
 async function connectLspSession(cookie) {
     const created = await createLspSession(cookie);
-    const documentUri = created.session.documentUri;
-    const workspaceUri = documentUri.slice(0, documentUri.lastIndexOf("/"));
+    const documentUri = created.session.documentUris["main.c"];
+    const headerUri = created.session.documentUris["aaa.h"];
+    const workspaceUri = created.session.workspaceUri;
     const socket = new WebSocket(`${wsOrigin}${created.session.webSocketPath}`, {
         headers: {
             Origin: httpOrigin,
@@ -208,6 +212,8 @@ async function connectLspSession(cookie) {
     try {
         await new Promise((resolvePromise, reject) => {
             let initialized = false;
+            let initialDiagnosticsSeen = false;
+            const diagnosticEvents = [];
             const finish = (error) => {
                 clearTimeout(timeout);
                 socket.off("open", handleOpen);
@@ -248,6 +254,16 @@ async function connectLspSession(cookie) {
 
                 try {
                     const message = JSON.parse(raw.toString());
+                    if (
+                        message.method === "textDocument/publishDiagnostics" &&
+                        Array.isArray(message.params?.diagnostics)
+                    ) {
+                        const document = message.params.uri === documentUri ? "main" : "other";
+                        const codes = message.params.diagnostics
+                            .map((diagnostic) => diagnostic.code ?? "unknown")
+                            .join("+");
+                        diagnosticEvents.push(`${document}:${message.params.diagnostics.length}:${codes}`);
+                    }
                     if (message.id === 1) {
                         if (message.error !== undefined || message.result === undefined) {
                             finish(new Error(`LSP initialize failed: ${raw}`));
@@ -256,30 +272,48 @@ async function connectLspSession(cookie) {
                         if (!initialized) {
                             initialized = true;
                             socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }));
-                            socket.send(
-                                JSON.stringify({
-                                    jsonrpc: "2.0",
-                                    method: "textDocument/didOpen",
-                                    params: {
-                                        textDocument: {
-                                            uri: documentUri,
-                                            languageId: "c",
-                                            version: 1,
-                                            text: created.source,
+                            for (const file of created.files) {
+                                socket.send(
+                                    JSON.stringify({
+                                        jsonrpc: "2.0",
+                                        method: "textDocument/didOpen",
+                                        params: {
+                                            textDocument: {
+                                                uri: created.session.documentUris[file.name],
+                                                languageId: "c",
+                                                version: 1,
+                                                text: file.content,
+                                            },
                                         },
-                                    },
-                                }),
-                            );
+                                    }),
+                                );
+                            }
                         }
                         return;
                     }
                     if (
                         message.method === "textDocument/publishDiagnostics" &&
                         message.params?.uri === documentUri &&
-                        Array.isArray(message.params.diagnostics) &&
-                        message.params.diagnostics.length > 0
+                        Array.isArray(message.params.diagnostics)
                     ) {
-                        finish();
+                        const hasUndeclaredIdentifier = message.params.diagnostics.some(
+                            (diagnostic) => diagnostic.code === "undeclared_var_use",
+                        );
+                        if (!initialDiagnosticsSeen && hasUndeclaredIdentifier) {
+                            initialDiagnosticsSeen = true;
+                            socket.send(
+                                JSON.stringify({
+                                    jsonrpc: "2.0",
+                                    method: "textDocument/didChange",
+                                    params: {
+                                        textDocument: { uri: headerUri, version: 2 },
+                                        contentChanges: [{ text: "#define missing 0\n" }],
+                                    },
+                                }),
+                            );
+                        } else if (initialDiagnosticsSeen && !hasUndeclaredIdentifier) {
+                            finish();
+                        }
                         return;
                     }
                     if (message.id !== undefined && typeof message.method === "string") {
@@ -289,7 +323,15 @@ async function connectLspSession(cookie) {
                     finish(error);
                 }
             };
-            const timeout = setTimeout(() => finish(new Error("LSP diagnostics timed out")), 15_000);
+            const timeout = setTimeout(
+                () =>
+                    finish(
+                        new Error(
+                            `LSP header synchronization timed out (diagnostics: ${diagnosticEvents.slice(-20).join(", ") || "none"})`,
+                        ),
+                    ),
+                15_000,
+            );
             socket.on("open", handleOpen);
             socket.on("message", handleMessage);
             socket.on("close", handleClose);
@@ -342,7 +384,18 @@ async function createLongExecution(cookie) {
             ...(cookie === "" ? {} : { Cookie: cookie }),
         },
         body: JSON.stringify({
-            source: '#include <stdio.h>\nint main(void) { printf("RUNTIME_SMOKE_READY"); return getchar() == EOF; }',
+            files: [
+                {
+                    name: "main.c",
+                    content: '#include "prompt.h"\nint main(void) { return wait_for_input(); }\n',
+                },
+                { name: "prompt.h", content: "int wait_for_input(void);\n" },
+                {
+                    name: "prompt.c",
+                    content:
+                        '#include <stdio.h>\n#include "prompt.h"\nint wait_for_input(void) { printf("RUNTIME_SMOKE_READY"); return getchar() == EOF; }\n',
+                },
+            ],
             terminal: { cols: 100, rows: 30 },
         }),
     });

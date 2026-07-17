@@ -7,10 +7,18 @@ export interface TerminalSize {
 }
 
 /**
+ * フラットなCプロジェクトを構成する1ファイルです。
+ */
+export interface CSourceFile {
+    name: string;
+    content: string;
+}
+
+/**
  * Cコード実行セッションを作成する公開リクエストです。
  */
 export interface CreateExecutionRequest {
-    source: string;
+    files: CSourceFile[];
     terminal: TerminalSize;
 }
 
@@ -42,7 +50,7 @@ export interface InternalCreateExecutionResponse extends CreateExecutionResponse
  * LSPセッションを作成する公開リクエストです。
  */
 export interface CreateLspSessionRequest {
-    source: string;
+    files: CSourceFile[];
 }
 
 /**
@@ -58,7 +66,8 @@ export interface InternalCreateLspSessionRequest extends CreateLspSessionRequest
  */
 export interface CreateLspSessionResponse {
     id: string;
-    documentUri: string;
+    workspaceUri: string;
+    documentUris: Record<string, string>;
     webSocketPath: string;
     expiresAt: string;
 }
@@ -156,6 +165,8 @@ export type ExecutionServerMessage =
       };
 
 export const SOURCE_MAX_BYTES = 64 * 1024;
+export const SOURCE_FILE_MAX_COUNT = 16;
+export const SOURCE_FILE_NAME_MAX_LENGTH = 64;
 export const TERMINAL_COLS_MIN = 20;
 export const TERMINAL_COLS_MAX = 240;
 export const TERMINAL_ROWS_MIN = 5;
@@ -188,6 +199,43 @@ export function isValidSource(source: unknown): source is string {
         !source.includes("\0") &&
         new TextEncoder().encode(source).byteLength <= SOURCE_MAX_BYTES
     );
+}
+
+/**
+ * ファイル名が同一階層のCソースまたはヘッダーとして安全か検証します。
+ */
+export function isValidSourceFileName(name: unknown): name is string {
+    return (
+        typeof name === "string" &&
+        name.length <= SOURCE_FILE_NAME_MAX_LENGTH &&
+        /^[A-Za-z0-9][A-Za-z0-9_-]*\.(?:c|h)$/u.test(name)
+    );
+}
+
+/**
+ * フラットなCプロジェクトの構造と合計サイズを検証します。
+ */
+export function isValidSourceFiles(files: unknown): files is CSourceFile[] {
+    if (!Array.isArray(files) || files.length === 0 || files.length > SOURCE_FILE_MAX_COUNT) {
+        return false;
+    }
+
+    const names = new Set<string>();
+    let totalBytes = 0;
+    for (const file of files) {
+        if (!isRecord(file) || !isValidSourceFileName(file.name) || !isValidSource(file.content)) {
+            return false;
+        }
+
+        const normalizedName = file.name.toLowerCase();
+        if (names.has(normalizedName)) {
+            return false;
+        }
+        names.add(normalizedName);
+        totalBytes += new TextEncoder().encode(file.content).byteLength;
+    }
+
+    return names.has("main.c") && totalBytes <= SOURCE_MAX_BYTES;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

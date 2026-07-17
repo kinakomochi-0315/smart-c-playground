@@ -3,6 +3,7 @@ import type {
     CreateExecutionResponse,
     CreateLspSessionRequest,
     CreateLspSessionResponse,
+    CSourceFile as ContractCSourceFile,
     ExecutionClientMessage,
     ExecutionPhase as WireExecutionPhase,
     ExecutionServerMessage,
@@ -11,6 +12,8 @@ import type {
 } from "@smart-c/contracts";
 
 export type LspStatus = "idle" | "connecting" | "connected" | "reconnecting" | "unavailable";
+
+export type CSourceFile = ContractCSourceFile;
 
 export type ExecutionPhase = "idle" | "creating" | "disconnected" | WireExecutionPhase;
 
@@ -50,4 +53,9 @@ export interface DiagnosticCounts {
 export interface PersistedSettings {
     paneRatio: number;
     activeTab: "code" | "io";
+}
+
+export interface PersistedProject {
+    files: CSourceFile[];
+    activeFileName: string;
 }

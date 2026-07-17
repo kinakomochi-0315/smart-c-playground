@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use executor_protocol::v1::{
-    ExitReason, JobAssignment, JobPhase, WorkerMessage, job_event, worker_message,
+    ExitReason, JobAssignment, JobPhase, SourceFile, WorkerMessage, job_event, worker_message,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -71,11 +71,29 @@ int main(void) {
         "Clang compileとmusl linkのABIが一致しません",
     )?;
 
-    let interactive_prompt = run_case_with_inputs(
+    let interactive_prompt = run_files_case_with_inputs(
         &config,
         "interactive-prompt",
-        r#"#include <stdio.h>
+        vec![
+            SourceFile {
+                name: "main.c".to_owned(),
+                content: r#"#include "prompt.h"
 int main(void) {
+    return read_values();
+}
+"#
+                .as_bytes()
+                .to_vec(),
+            },
+            SourceFile {
+                name: "prompt.h".to_owned(),
+                content: b"int read_values(void);\n".to_vec(),
+            },
+            SourceFile {
+                name: "prompt.c".to_owned(),
+                content: r#"#include <stdio.h>
+#include "prompt.h"
+int read_values(void) {
     int a;
     int b;
     printf("a: ");
@@ -85,7 +103,11 @@ int main(void) {
     printf("VALUES:%d,%d\n", a, b);
     return 0;
 }
-"#,
+"#
+                .as_bytes()
+                .to_vec(),
+            },
+        ],
         Duration::from_secs(15),
         &[
             PromptInput {
@@ -340,12 +362,33 @@ async fn run_case_with_inputs(
     timeout: Duration,
     prompt_inputs: &[PromptInput],
 ) -> Result<SmokeResult, SmokeError> {
+    run_files_case_with_inputs(
+        config,
+        name,
+        vec![SourceFile {
+            name: "main.c".to_owned(),
+            content: source.as_bytes().to_vec(),
+        }],
+        timeout,
+        prompt_inputs,
+    )
+    .await
+}
+
+/// 複数ファイルを同一workspaceへ配置してsmoke caseを実行します。
+async fn run_files_case_with_inputs(
+    config: &WorkerConfig,
+    name: &'static str,
+    files: Vec<SourceFile>,
+    timeout: Duration,
+    prompt_inputs: &[PromptInput],
+) -> Result<SmokeResult, SmokeError> {
     let job_id = Uuid::new_v4();
     let assignment = JobAssignment {
         job_id: job_id.to_string(),
-        source: source.as_bytes().to_vec(),
         terminal_cols: 80,
         terminal_rows: 24,
+        files,
     };
     let (control_sender, control_receiver) = mpsc::channel::<JobControl>(4);
     let (outbound_sender, mut outbound_receiver) = mpsc::channel::<WorkerMessage>(512);

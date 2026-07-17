@@ -101,7 +101,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         `${baseUrl}/internal/sessions`,
         process.env.LSP_INTERNAL_TOKEN ?? process.env.INTERNAL_SHARED_TOKEN ?? process.env.INTERNAL_SERVICE_TOKEN,
         {
-            source: validation.value.source,
+            files: validation.value.files,
             visitorId: identity.id,
             clientIp,
         },
@@ -115,7 +115,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const response = Response.json<LspSessionResponse>(
         {
             id: result.value.id,
-            documentUri: result.value.documentUri!,
+            workspaceUri: result.value.workspaceUri!,
+            documentUris: result.value.documentUris!,
             webSocketPath: result.value.webSocketPath,
             expiresAt: result.value.expiresAt,
         },

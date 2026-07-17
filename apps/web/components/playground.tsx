@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { isValidSourceFileName, SOURCE_FILE_MAX_COUNT } from "@smart-c/contracts";
 import {
     type CSSProperties,
     type KeyboardEvent as ReactKeyboardEvent,
@@ -14,15 +15,16 @@ import {
 import { InteractiveTerminal, type InteractiveTerminalHandle } from "@/components/interactive-terminal";
 import { ApiError, createExecution, createLspSession } from "@/lib/client/api";
 import {
+    DEFAULT_PROJECT,
     DEFAULT_SETTINGS,
-    DEFAULT_SOURCE,
+    loadProject,
     loadSettings,
-    loadSource,
+    saveProject,
     saveSettings,
-    saveSource,
 } from "@/lib/client/storage";
 import { sendJsonMessage, toWebSocketUrl } from "@/lib/client/websocket";
 import type {
+    CSourceFile,
     DiagnosticCounts,
     ExecutionClientEvent,
     ExecutionExitEvent,
@@ -156,10 +158,24 @@ function parseServerEvent(data: string): ExecutionServerEvent | undefined {
 }
 
 /**
+ * 作成・変更後のファイル名がプロジェクト内で利用可能か確認します。
+ */
+function getFileNameError(files: CSourceFile[], name: string, currentName?: string): string | undefined {
+    if (!isValidSourceFileName(name)) {
+        return "ファイル名は英数字、ハイフン、アンダースコアを使った.cまたは.hにしてください。";
+    }
+    if (files.some((file) => file.name !== currentName && file.name.toLowerCase() === name.toLowerCase())) {
+        return "同じファイル名が既にあります。";
+    }
+    return undefined;
+}
+
+/**
  * エディター、clangd、対話端末を一画面に統合するメインUIです。
  */
 export function Playground() {
-    const [source, setSource] = useState(DEFAULT_SOURCE);
+    const [files, setFiles] = useState<CSourceFile[]>(DEFAULT_PROJECT.files);
+    const [activeFileName, setActiveFileName] = useState(DEFAULT_PROJECT.activeFileName);
     const [hydrated, setHydrated] = useState(false);
     const [settings, setSettings] = useState<PersistedSettings>(DEFAULT_SETTINGS);
     const [isMobile, setIsMobile] = useState(false);
@@ -178,13 +194,14 @@ export function Playground() {
     const executionSocketRef = useRef<WebSocket | null>(null);
     const executionRequestAbortRef = useRef<AbortController | null>(null);
     const executionPhaseRef = useRef<ExecutionPhase>("idle");
-    const sourceRef = useRef(source);
+    const filesRef = useRef(files);
     const runRef = useRef<() => void>(() => undefined);
     const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const lspConnectRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const lspReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const lspReconnectCountRef = useRef(0);
     const expectedSocketCloseRef = useRef(false);
+    const pendingLspRestartRef = useRef(false);
 
     /**
      * React stateとイベントコールバック用refを同時に更新します。
@@ -221,7 +238,10 @@ export function Playground() {
         const mediaQuery = window.matchMedia("(max-width: 959px)");
         const updateMobile = () => setIsMobile(mediaQuery.matches);
         const animationFrame = requestAnimationFrame(() => {
-            setSource(loadSource());
+            const project = loadProject();
+            filesRef.current = project.files;
+            setFiles(project.files);
+            setActiveFileName(project.activeFileName);
             setSettings(loadSettings());
             setHydrated(true);
             updateMobile();
@@ -234,8 +254,8 @@ export function Playground() {
     }, []);
 
     useEffect(() => {
-        sourceRef.current = source;
-    }, [source]);
+        filesRef.current = files;
+    }, [files]);
 
     useEffect(() => {
         if (!hydrated) {
@@ -243,12 +263,12 @@ export function Playground() {
         }
 
         const timer = setTimeout(() => {
-            if (!saveSource(source)) {
+            if (!saveProject({ files, activeFileName })) {
                 setSystemMessage("ブラウザへコードを保存できませんでした。");
             }
         }, 350);
         return () => clearTimeout(timer);
-    }, [hydrated, source]);
+    }, [activeFileName, files, hydrated]);
 
     useEffect(() => {
         if (hydrated && !saveSettings(settings)) {
@@ -272,7 +292,7 @@ export function Playground() {
             setLspStatus(lspCycle === 0 && attempt === 0 ? "connecting" : "reconnecting");
             try {
                 const session = await createLspSession({
-                    source: sourceRef.current,
+                    files: filesRef.current,
                 });
                 if (!cancelled) {
                     setLspSession(session);
@@ -347,6 +367,124 @@ export function Playground() {
             setLspCycle((cycle) => cycle + 1);
         }, 750 * lspReconnectCountRef.current);
     }, []);
+
+    /**
+     * ファイル構造を更新し、既存LSP WebSocketのclose後に新しいworkspaceを作ります。
+     */
+    const updateProjectStructure = useCallback(
+        (nextFiles: CSourceFile[], nextActiveFileName: string) => {
+            filesRef.current = nextFiles;
+            setFiles(nextFiles);
+            setActiveFileName(nextActiveFileName);
+            setDiagnostics({ errors: 0, warnings: 0 });
+            setLspStatus("reconnecting");
+            if (lspReconnectTimerRef.current !== null) {
+                clearTimeout(lspReconnectTimerRef.current);
+                lspReconnectTimerRef.current = null;
+            }
+            lspReconnectCountRef.current = 0;
+
+            if (pendingLspRestartRef.current) {
+                return;
+            }
+            if (lspSession !== undefined) {
+                pendingLspRestartRef.current = true;
+                setLspSession(undefined);
+                return;
+            }
+            setLspCycle((cycle) => cycle + 1);
+        },
+        [lspSession],
+    );
+
+    /**
+     * 古いLSP WebSocketのclose完了後に次のセッション作成を開始します。
+     */
+    const handleLspDisposed = useCallback(() => {
+        if (!pendingLspRestartRef.current) {
+            return;
+        }
+        pendingLspRestartRef.current = false;
+        setLspCycle((cycle) => cycle + 1);
+    }, []);
+
+    /**
+     * 既存ファイルの内容だけを更新し、LSPのdidChangeへ任せます。
+     */
+    const handleFileChange = useCallback((name: string, content: string) => {
+        setFiles((current) => {
+            const next = current.map((file) => (file.name === name ? { ...file, content } : file));
+            filesRef.current = next;
+            return next;
+        });
+    }, []);
+
+    /**
+     * 同一階層へ空のCソースまたはヘッダーを追加します。
+     */
+    const createFile = useCallback(() => {
+        if (filesRef.current.length >= SOURCE_FILE_MAX_COUNT) {
+            window.alert(`ファイルは${SOURCE_FILE_MAX_COUNT}件まで作成できます。`);
+            return;
+        }
+
+        const input = window.prompt("作成するファイル名（.c または .h）", "aaa.h");
+        if (input === null) {
+            return;
+        }
+        const name = input.trim();
+        const error = getFileNameError(filesRef.current, name);
+        if (error !== undefined) {
+            window.alert(error);
+            return;
+        }
+
+        updateProjectStructure([...filesRef.current, { name, content: "" }], name);
+    }, [updateProjectStructure]);
+
+    /**
+     * 指定ファイルの名前を変更します。main.cはentry pointとして固定します。
+     */
+    const renameFile = useCallback(
+        (fileName: string) => {
+            if (fileName === "main.c") {
+                return;
+            }
+            const input = window.prompt("新しいファイル名（.c または .h）", fileName);
+            if (input === null) {
+                return;
+            }
+            const name = input.trim();
+            if (name === fileName) {
+                return;
+            }
+            const error = getFileNameError(filesRef.current, name, fileName);
+            if (error !== undefined) {
+                window.alert(error);
+                return;
+            }
+
+            const next = filesRef.current.map((file) => (file.name === fileName ? { ...file, name } : file));
+            updateProjectStructure(next, name);
+        },
+        [updateProjectStructure],
+    );
+
+    /**
+     * 指定ファイルを確認後に削除します。main.cは削除しません。
+     */
+    const deleteFile = useCallback(
+        (fileName: string) => {
+            if (fileName === "main.c" || !window.confirm(`${fileName} を削除しますか？`)) {
+                return;
+            }
+            updateProjectStructure(
+                filesRef.current.filter((file) => file.name !== fileName),
+                "main.c",
+            );
+        },
+        [updateProjectStructure],
+    );
 
     /**
      * 実行WebSocketから届いたJSON状態メッセージを画面へ反映します。
@@ -475,7 +613,7 @@ export function Playground() {
             };
             const session = await createExecution(
                 {
-                    source: sourceRef.current,
+                    files: filesRef.current,
                     terminal,
                 },
                 abortController.signal,
@@ -714,8 +852,36 @@ export function Playground() {
                     data-mobile-active={settings.activeTab === "code"}
                     aria-label="コード入力"
                 >
-                    <div className="pane-header">
-                        <span className="file-name">main.c</span>
+                    <div className="file-tabs-bar">
+                        <div className="file-tabs" role="tablist" aria-label="プロジェクトファイル">
+                            {files.map((file) => {
+                                const isActive = file.name === activeFileName;
+                                return (
+                                    <div key={file.name} className="file-tab" data-active={isActive}>
+                                        <button
+                                            type="button"
+                                            className="file-tab-select"
+                                            role="tab"
+                                            aria-selected={isActive}
+                                            onClick={() => setActiveFileName(file.name)}
+                                            onDoubleClick={() => renameFile(file.name)}
+                                        >
+                                            {file.name}
+                                        </button>
+                                        {isActive && file.name !== "main.c" && (
+                                            <button
+                                                type="button"
+                                                className="file-tab-delete"
+                                                aria-label={`${file.name}を削除`}
+                                                onClick={() => deleteFile(file.name)}
+                                            >
+                                                ×
+                                            </button>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
                         <div className="pane-status">
                             <span className={`status-dot status-${lspStatus}`} aria-hidden="true" />
                             <span>{getLspStatusLabel(lspStatus)}</span>
@@ -726,16 +892,23 @@ export function Playground() {
                                 W {diagnostics.warnings}
                             </span>
                         </div>
+                        <div className="file-actions" aria-label="ファイル操作">
+                            <button type="button" onClick={createFile} aria-label="ファイルを作成">
+                                ＋
+                            </button>
+                        </div>
                     </div>
                     <div className="pane-body">
                         {hydrated ? (
                             <CodeEditor
                                 key={lspSession?.id ?? `offline-${lspCycle}`}
-                                initialSource={source}
+                                files={files}
+                                activeFileName={activeFileName}
                                 session={lspSession}
-                                onChange={setSource}
+                                onChange={handleFileChange}
                                 onDiagnosticsChange={setDiagnostics}
                                 onStatusChange={handleLspStatusChange}
+                                onDisposed={handleLspDisposed}
                             />
                         ) : (
                             <div className="editor-loading" role="status">

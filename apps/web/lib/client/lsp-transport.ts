@@ -4,6 +4,7 @@ import type { DiagnosticCounts } from "@/types/wire";
 
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
+const SOCKET_CLOSED = 3;
 const DEFAULT_OPEN_TIMEOUT_MS = 10_000;
 
 /**
@@ -63,8 +64,10 @@ export class DeferredDisposer {
 export class WebSocketLspTransport implements Transport {
     private readonly subscribers = new Set<(message: string) => void>();
     private readonly openPromise: Promise<void>;
+    private readonly closedPromise: Promise<void>;
     private resolveOpen: (() => void) | undefined;
     private rejectOpen: ((error: Error) => void) | undefined;
+    private resolveClosed: (() => void) | undefined;
     private openTimer: ReturnType<typeof setTimeout> | undefined;
     private openSettled = false;
     private unavailableNotified = false;
@@ -81,6 +84,9 @@ export class WebSocketLspTransport implements Transport {
             this.resolveOpen = resolve;
             this.rejectOpen = reject;
         });
+        this.closedPromise = new Promise<void>((resolve) => {
+            this.resolveClosed = resolve;
+        });
         // 呼び出し側がwaitを開始する前に失敗してもunhandled rejectionにはしません。
         void this.openPromise.catch(() => undefined);
 
@@ -94,6 +100,9 @@ export class WebSocketLspTransport implements Transport {
         } else if (this.socket.readyState !== SOCKET_CONNECTING) {
             this.failOpen("LSP WebSocketは接続を開始できない状態です。");
             this.notifyUnexpectedDisconnect("close");
+            if (this.socket.readyState === SOCKET_CLOSED) {
+                this.settleClosed();
+            }
         }
     }
 
@@ -151,7 +160,9 @@ export class WebSocketLspTransport implements Transport {
 
         this.disposed = true;
         this.subscribers.clear();
-        this.detachSocketListeners();
+        this.socket.removeEventListener("open", this.handleOpen);
+        this.socket.removeEventListener("message", this.handleMessage);
+        this.socket.removeEventListener("error", this.handleError);
 
         if (!this.openSettled) {
             this.failOpen("LSP WebSocketの接続待機中にTransportが破棄されました。");
@@ -159,7 +170,16 @@ export class WebSocketLspTransport implements Transport {
 
         if (this.socket.readyState === SOCKET_CONNECTING || this.socket.readyState === SOCKET_OPEN) {
             this.socket.close(1000, "client dispose");
+        } else if (this.socket.readyState === SOCKET_CLOSED) {
+            this.settleClosed();
         }
+    }
+
+    /**
+     * WebSocketのclose handshake完了まで待機します。
+     */
+    waitUntilClosed(): Promise<void> {
+        return this.closedPromise;
     }
 
     /**
@@ -196,6 +216,7 @@ export class WebSocketLspTransport implements Transport {
     };
 
     private readonly handleClose = (): void => {
+        this.settleClosed();
         if (this.disposed) {
             return;
         }
@@ -237,6 +258,12 @@ export class WebSocketLspTransport implements Transport {
         this.onUnexpectedDisconnect(reason);
     }
 
+    private settleClosed(): void {
+        this.resolveClosed?.();
+        this.resolveClosed = undefined;
+        this.detachSocketListeners();
+    }
+
     private detachSocketListeners(): void {
         this.socket.removeEventListener("open", this.handleOpen);
         this.socket.removeEventListener("message", this.handleMessage);
@@ -250,24 +277,6 @@ export class WebSocketLspTransport implements Transport {
             this.openTimer = undefined;
         }
     }
-}
-
-/**
- * 単一ファイル`main.c`のdocument URIからclangdへ渡すworkspace URIを算出します。
- */
-export function getLspRootUri(documentUri: string): string {
-    const documentSuffix = "/main.c";
-
-    if (!documentUri.endsWith(documentSuffix)) {
-        throw new Error("LSP document URIは/main.cで終わる必要があります。");
-    }
-
-    const rootUri = documentUri.slice(0, -documentSuffix.length);
-    if (rootUri.length === 0 || rootUri.endsWith("/")) {
-        throw new Error("LSP workspace URIをdocument URIから算出できません。");
-    }
-
-    return rootUri;
 }
 
 /**

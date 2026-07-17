@@ -88,7 +88,7 @@ export type JsonRpcGuardResult =
  * LSP JSON-RPC検証器の設定です。
  */
 export interface LspJsonRpcGuardOptions {
-    documentUri: string;
+    documentUris: readonly string[];
     workspaceUri: string;
     maxDocumentBytes?: number;
     clientRateWindowMs?: number;
@@ -100,15 +100,38 @@ export interface LspJsonRpcGuardOptions {
     now?: () => number;
 }
 
+/**
+ * 検証済みLSP文書を一時workspaceへ同期するための更新です。
+ */
+export interface LspDocumentUpdate {
+    uri: string;
+    text: string;
+    notifyDependents: boolean;
+}
+
+/**
+ * 強制再解析へ使うopen文書のURIと現在versionです。
+ */
+export interface LspOpenDocumentVersion {
+    uri: string;
+    version: number;
+}
+
 interface JsonObject {
     [key: string]: unknown;
 }
 
+interface TrackedDocument {
+    text: string;
+    version: number;
+    bytes: number;
+}
+
 /**
- * 単一main.cへ許可したLSPメッセージだけを通過させます。
+ * セッション作成時のCソースへ許可したLSPメッセージだけを通過させます。
  */
 export class LspJsonRpcGuard {
-    readonly #documentUri: string;
+    readonly #documentUris: ReadonlySet<string>;
     readonly #workspaceUri: string;
     readonly #maxDocumentBytes: number;
     readonly #clientRateWindowMs: number;
@@ -125,14 +148,15 @@ export class LspJsonRpcGuard {
     #initializeSeen = false;
     #initializedSeen = false;
     #shutdownSeen = false;
-    #documentText: string | null = null;
-    #documentVersion: number | null = null;
+    readonly #documents = new Map<string, TrackedDocument>();
+    #documentBytes = 0;
+    #pendingDocumentUpdate: LspDocumentUpdate | null = null;
 
     /**
      * セッション固有URIと通信量上限を保持します。
      */
     public constructor(options: LspJsonRpcGuardOptions) {
-        this.#documentUri = options.documentUri;
+        this.#documentUris = new Set(options.documentUris);
         this.#workspaceUri = options.workspaceUri;
         this.#maxDocumentBytes = options.maxDocumentBytes ?? LSP_DOCUMENT_MAX_BYTES;
         this.#clientRateWindowMs = options.clientRateWindowMs ?? LSP_CLIENT_RATE_WINDOW_MS;
@@ -149,6 +173,7 @@ export class LspJsonRpcGuard {
      * ブラウザからclangdへ送るJSON-RPCを検証します。
      */
     public validateClientMessage(content: string): JsonRpcGuardResult {
+        this.#pendingDocumentUpdate = null;
         const contentBytes = Buffer.byteLength(content, "utf8");
         const budgetResult = this.#consumeClientBudget(contentBytes);
         if (!budgetResult.accepted) {
@@ -159,7 +184,7 @@ export class LspJsonRpcGuard {
         if (message === null || message.jsonrpc !== "2.0") {
             return policyViolation("Invalid JSON-RPC message");
         }
-        if (hasUnexpectedUri(message, this.#documentUri, this.#workspaceUri)) {
+        if (hasUnexpectedUri(message, this.#documentUris, this.#workspaceUri)) {
             return policyViolation("Unexpected document URI");
         }
 
@@ -171,6 +196,22 @@ export class LspJsonRpcGuard {
         }
 
         return this.#validateClientMethod(message.method, message.params);
+    }
+
+    /**
+     * 直前の検証で確定した文書全文を一度だけ取り出します。
+     */
+    public takeDocumentUpdate(): LspDocumentUpdate | null {
+        const update = this.#pendingDocumentUpdate;
+        this.#pendingDocumentUpdate = null;
+        return update;
+    }
+
+    /**
+     * 現在open中の全LSP文書versionをスナップショットとして返します。
+     */
+    public openDocumentVersions(): LspOpenDocumentVersion[] {
+        return [...this.#documents].map(([uri, document]) => ({ uri, version: document.version }));
     }
 
     /**
@@ -192,7 +233,7 @@ export class LspJsonRpcGuard {
         if (message === null || message.jsonrpc !== "2.0") {
             return policyViolation("Invalid server JSON-RPC message");
         }
-        if (hasUnexpectedUri(message, this.#documentUri, this.#workspaceUri)) {
+        if (hasUnexpectedUri(message, this.#documentUris, this.#workspaceUri)) {
             return policyViolation("Unexpected server document URI");
         }
 
@@ -201,7 +242,7 @@ export class LspJsonRpcGuard {
     }
 
     /**
-     * methodごとの状態遷移と単一文書制約を検証します。
+     * methodごとの状態遷移と許可済み文書制約を検証します。
      */
     #validateClientMethod(method: string, params: unknown): JsonRpcGuardResult {
         if (method === "$/cancelRequest" || method === "$/setTrace") {
@@ -249,23 +290,26 @@ export class LspJsonRpcGuard {
                     ? accepted()
                     : policyViolation("Workspace configuration is not allowed");
             default:
-                return DOCUMENT_METHODS.has(method) && !hasExactTextDocument(params, this.#documentUri)
+                return DOCUMENT_METHODS.has(method) && !hasAllowedTextDocument(params, this.#documentUris)
                     ? policyViolation("Unexpected text document")
                     : accepted();
         }
     }
 
     /**
-     * main.cのdidOpenと初期全文を検証します。
+     * 許可済み文書のdidOpenと初期全文を検証します。
      */
     #validateDidOpen(params: unknown): JsonRpcGuardResult {
-        if (this.#documentText !== null || !isJsonObject(params) || !isJsonObject(params.textDocument)) {
+        if (!isJsonObject(params) || !isJsonObject(params.textDocument)) {
             return policyViolation("Invalid didOpen notification");
         }
 
         const textDocument = params.textDocument;
+        const uri = textDocument.uri;
         if (
-            textDocument.uri !== this.#documentUri ||
+            typeof uri !== "string" ||
+            !this.#documentUris.has(uri) ||
+            this.#documents.has(uri) ||
             typeof textDocument.text !== "string" ||
             !isSafeDocumentText(textDocument.text, this.#maxDocumentBytes) ||
             !isDocumentVersion(textDocument.version)
@@ -273,23 +317,30 @@ export class LspJsonRpcGuard {
             return policyViolation("Invalid didOpen document");
         }
 
-        this.#documentText = textDocument.text;
-        this.#documentVersion = textDocument.version;
+        const bytes = Buffer.byteLength(textDocument.text, "utf8");
+        if (this.#documentBytes + bytes > this.#maxDocumentBytes) {
+            return policyViolation("Open documents are too large");
+        }
+
+        this.#documents.set(uri, {
+            text: textDocument.text,
+            version: textDocument.version,
+            bytes,
+        });
+        this.#documentBytes += bytes;
+        this.#pendingDocumentUpdate = { uri, text: textDocument.text, notifyDependents: false };
         return accepted();
     }
 
     /**
-     * main.cの増分変更を適用し、適用後も64KiB以下か検証します。
+     * 文書の増分変更を適用し、全ファイルの合計も64KiB以下か検証します。
      */
     #validateDidChange(params: unknown): JsonRpcGuardResult {
         if (
-            this.#documentText === null ||
-            this.#documentVersion === null ||
             !isJsonObject(params) ||
             !isJsonObject(params.textDocument) ||
-            params.textDocument.uri !== this.#documentUri ||
+            typeof params.textDocument.uri !== "string" ||
             !isDocumentVersion(params.textDocument.version) ||
-            params.textDocument.version <= this.#documentVersion ||
             !Array.isArray(params.contentChanges) ||
             params.contentChanges.length === 0 ||
             params.contentChanges.length > LSP_MAX_CONTENT_CHANGES
@@ -297,7 +348,13 @@ export class LspJsonRpcGuard {
             return policyViolation("Invalid didChange notification");
         }
 
-        let nextText = this.#documentText;
+        const uri = params.textDocument.uri;
+        const document = this.#documents.get(uri);
+        if (document === undefined || params.textDocument.version <= document.version) {
+            return policyViolation("Invalid didChange document");
+        }
+
+        let nextText = document.text;
         for (const change of params.contentChanges) {
             const applied = applyDocumentChange(nextText, change, this.#maxDocumentBytes);
             if (applied === null) {
@@ -306,21 +363,38 @@ export class LspJsonRpcGuard {
             nextText = applied;
         }
 
-        this.#documentText = nextText;
-        this.#documentVersion = params.textDocument.version;
+        const nextBytes = Buffer.byteLength(nextText, "utf8");
+        if (this.#documentBytes - document.bytes + nextBytes > this.#maxDocumentBytes) {
+            return policyViolation("Open documents are too large");
+        }
+        this.#documentBytes = this.#documentBytes - document.bytes + nextBytes;
+        this.#documents.set(uri, {
+            text: nextText,
+            version: params.textDocument.version,
+            bytes: nextBytes,
+        });
+        this.#pendingDocumentUpdate = { uri, text: nextText, notifyDependents: true };
         return accepted();
     }
 
     /**
-     * main.cだけを閉じ、再open可能な状態へ戻します。
+     * 文書を閉じ、再open可能な状態へ戻します。
      */
     #validateDidClose(params: unknown): JsonRpcGuardResult {
-        if (this.#documentText === null || !hasExactTextDocument(params, this.#documentUri)) {
+        if (
+            !isJsonObject(params) ||
+            !isJsonObject(params.textDocument) ||
+            typeof params.textDocument.uri !== "string"
+        ) {
             return policyViolation("Invalid didClose notification");
         }
 
-        this.#documentText = null;
-        this.#documentVersion = null;
+        const document = this.#documents.get(params.textDocument.uri);
+        if (document === undefined) {
+            return policyViolation("Invalid didClose document");
+        }
+        this.#documents.delete(params.textDocument.uri);
+        this.#documentBytes -= document.bytes;
         return accepted();
     }
 
@@ -328,8 +402,17 @@ export class LspJsonRpcGuard {
      * didSaveに全文が含まれる場合も同じ文書上限を適用します。
      */
     #validateDidSave(params: unknown): JsonRpcGuardResult {
-        if (this.#documentText === null || !hasExactTextDocument(params, this.#documentUri) || !isJsonObject(params)) {
+        if (
+            !isJsonObject(params) ||
+            !isJsonObject(params.textDocument) ||
+            typeof params.textDocument.uri !== "string"
+        ) {
             return policyViolation("Invalid didSave notification");
+        }
+        const uri = params.textDocument.uri;
+        const document = this.#documents.get(uri);
+        if (document === undefined) {
+            return policyViolation("Invalid didSave document");
         }
         if (params.text === undefined) {
             return accepted();
@@ -338,7 +421,17 @@ export class LspJsonRpcGuard {
             return policyViolation("Invalid didSave document");
         }
 
-        this.#documentText = params.text;
+        const nextBytes = Buffer.byteLength(params.text, "utf8");
+        if (this.#documentBytes - document.bytes + nextBytes > this.#maxDocumentBytes) {
+            return policyViolation("Open documents are too large");
+        }
+        this.#documentBytes = this.#documentBytes - document.bytes + nextBytes;
+        this.#documents.set(uri, {
+            ...document,
+            text: params.text,
+            bytes: nextBytes,
+        });
+        this.#pendingDocumentUpdate = { uri, text: params.text, notifyDependents: true };
         return accepted();
     }
 
@@ -415,10 +508,15 @@ function isSafeConfigurationChange(params: unknown): boolean {
 }
 
 /**
- * params内のTextDocumentIdentifierが対象main.cと一致するか判定します。
+ * params内のTextDocumentIdentifierが許可済み文書と一致するか判定します。
  */
-function hasExactTextDocument(params: unknown, documentUri: string): boolean {
-    return isJsonObject(params) && isJsonObject(params.textDocument) && params.textDocument.uri === documentUri;
+function hasAllowedTextDocument(params: unknown, documentUris: ReadonlySet<string>): boolean {
+    return (
+        isJsonObject(params) &&
+        isJsonObject(params.textDocument) &&
+        typeof params.textDocument.uri === "string" &&
+        documentUris.has(params.textDocument.uri)
+    );
 }
 
 /**
@@ -447,7 +545,7 @@ function isJsonRpcResponse(message: JsonObject): boolean {
 /**
  * JSON値にセッション外URIが含まれていないか反復的に調べます。
  */
-function hasUnexpectedUri(value: JsonObject, documentUri: string, workspaceUri: string): boolean {
+function hasUnexpectedUri(value: JsonObject, documentUris: ReadonlySet<string>, workspaceUri: string): boolean {
     const pending: Array<{ depth: number; value: unknown }> = [{ depth: 0, value }];
     let visitedNodes = 0;
 
@@ -479,8 +577,8 @@ function hasUnexpectedUri(value: JsonObject, documentUri: string, workspaceUri: 
             if (
                 URI_PROPERTY_NAMES.has(key) &&
                 typeof child === "string" &&
-                child !== documentUri &&
-                child !== workspaceUri
+                child !== workspaceUri &&
+                !documentUris.has(child)
             ) {
                 return true;
             }

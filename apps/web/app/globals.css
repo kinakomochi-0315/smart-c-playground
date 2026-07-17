@@ -179,6 +179,10 @@ button:focus-visible,
     background: var(--surface);
 }
 
+.code-pane {
+    grid-template-rows: 34px minmax(0, 1fr);
+}
+
 .pane-header {
     display: flex;
     align-items: center;
@@ -266,6 +270,83 @@ button:focus-visible,
     overflow: hidden;
 }
 
+.file-tabs-bar {
+    display: flex;
+    min-width: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-subtle);
+}
+
+.file-tabs {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+
+.file-tab {
+    display: flex;
+    height: 33px;
+    flex: 0 0 auto;
+    border-right: 1px solid var(--border);
+    color: var(--muted);
+}
+
+.file-tab[data-active="true"] {
+    border-bottom: 2px solid var(--accent);
+    background: var(--surface);
+    color: var(--text);
+}
+
+.file-tab button,
+.file-actions button {
+    height: 33px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.file-tab-select {
+    padding: 0 12px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 11px;
+}
+
+.file-tab-delete {
+    padding: 0 8px 0 2px;
+    font-size: 15px;
+    line-height: 1;
+}
+
+.file-tabs-bar > .pane-status {
+    flex: 0 0 auto;
+    padding: 0 10px;
+    border-left: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+}
+
+.file-actions {
+    display: flex;
+    flex: 0 0 auto;
+    border-left: 1px solid var(--border);
+}
+
+.file-actions button {
+    padding: 0 9px;
+    font-size: 11px;
+}
+
+.file-actions button:hover,
+.file-tab button:hover {
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+    color: var(--text);
+}
+
 .pane-divider {
     position: relative;
     z-index: 2;
@@ -292,6 +373,8 @@ button:focus-visible,
     background: color-mix(in srgb, var(--accent) 10%, var(--surface-subtle));
 }
 
+.file-editor-stack,
+.file-editor,
 .codemirror-root,
 .codemirror-root > div,
 .codemirror-root .cm-editor,
@@ -299,6 +382,14 @@ button:focus-visible,
     width: 100%;
     height: 100%;
     min-height: 0;
+}
+
+.file-editor {
+    display: none;
+}
+
+.file-editor[data-active="true"] {
+    display: block;
 }
 
 .codemirror-root .cm-line,

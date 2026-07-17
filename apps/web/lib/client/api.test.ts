@@ -18,7 +18,7 @@ describe("client api", () => {
         );
 
         const promise = createExecution({
-            source: "int main(void) { return 0; }",
+            files: [{ name: "main.c", content: "int main(void) { return 0; }" }],
             terminal: {
                 cols: 100,
                 rows: 30,
@@ -51,7 +51,7 @@ describe("client api", () => {
 
         await expect(
             createExecution({
-                source: "",
+                files: [{ name: "main.c", content: "" }],
                 terminal: {
                     cols: 100,
                     rows: 30,

@@ -373,7 +373,10 @@ mod tests {
     async fn internal_create_requires_token_and_returns_ticket() {
         let app = router(AppState::new(AppConfig::for_test()));
         let body = serde_json::json!({
-            "source": "int main(void) { return 0; }",
+            "files": [
+                { "name": "main.c", "content": "int main(void) { return answer(); }" },
+                { "name": "answer.c", "content": "int answer(void) { return 0; }" }
+            ],
             "terminal": { "cols": 100, "rows": 30 },
             "visitorId": "visitor",
             "clientIp": "192.0.2.1"

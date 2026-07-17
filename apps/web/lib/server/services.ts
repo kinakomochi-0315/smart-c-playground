@@ -7,7 +7,8 @@ interface InternalSessionResponse {
     webSocketPath: string;
     expiresAt: string;
     ticket: string;
-    documentUri?: string;
+    workspaceUri?: string;
+    documentUris?: Record<string, string>;
 }
 
 export type UpstreamResult =
@@ -93,7 +94,10 @@ export async function createInternalSession(
             Number.isNaN(Date.parse(value.expiresAt)) ||
             typeof value.ticket !== "string" ||
             value.ticket.length === 0 ||
-            (expectedWebSocketPrefix === "/ws/lsp/" && typeof value.documentUri !== "string")
+            (expectedWebSocketPrefix === "/ws/lsp/" &&
+                (typeof value.workspaceUri !== "string" ||
+                    !isStringRecord(value.documentUris) ||
+                    typeof value.documentUris["main.c"] !== "string"))
         ) {
             return {
                 ok: false,
@@ -115,6 +119,18 @@ export async function createInternalSession(
             ),
         };
     }
+}
+
+/**
+ * 値が文字列だけを持つJSONオブジェクトか検証します。
+ */
+function isStringRecord(value: unknown): value is Record<string, string> {
+    return (
+        typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value) &&
+        Object.values(value).every((entry) => typeof entry === "string")
+    );
 }
 
 /**

@@ -10,10 +10,10 @@
 ## プロダクト境界
 
 - 対象言語はC17だけです。
-- v1は単一ファイル `main.c` だけを扱います。
+- 同一階層の `.c` / `.h` を扱い、`main.c` を必須とします。
 - LSP診断があっても実行を禁止しません。実コンパイラの結果を正とします。
-- source、stdin、terminal outputをサーバー側へ永続化またはログ出力しません。
-- sourceのブラウザ内localStorage保存は、利用者端末だけに閉じたv1の明示機能として扱います。
+- source files、stdin、terminal outputをサーバー側へ永続化またはログ出力しません。
+- source filesのブラウザ内localStorage保存は、利用者端末だけに閉じた明示機能として扱います。
 
 ## セキュリティ
 

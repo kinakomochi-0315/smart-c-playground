@@ -27,10 +27,10 @@ impl CommandFactory {
         Self { config }
     }
 
-    /// `main.c` を `main.o` へコンパイルするコマンドです。
-    pub(crate) fn compile(&self, workspace: &Path) -> CommandSpec {
+    /// 全Cソースを同名のオブジェクトへコンパイルするコマンドです。
+    pub(crate) fn compile(&self, workspace: &Path, source_files: &[String]) -> CommandSpec {
         let compiler = self.config.clang_path.to_string_lossy().into_owned();
-        let args = vec![
+        let mut args = vec![
             format!("--target={}", self.config.musl_target),
             "-nostdinc".to_owned(),
             "-isystem".to_owned(),
@@ -47,27 +47,29 @@ impl CommandFactory {
             "-Wpedantic".to_owned(),
             "-fno-color-diagnostics".to_owned(),
             "-c".to_owned(),
-            "main.c".to_owned(),
-            "-o".to_owned(),
-            "main.o".to_owned(),
         ];
+        args.extend(source_files.iter().cloned());
         self.wrap_compile(workspace, compiler, args)
     }
 
-    /// `main.o` をmusl静的実行ファイルへリンクするコマンドです。
-    pub(crate) fn link(&self, workspace: &Path) -> CommandSpec {
+    /// 全ユーザーオブジェクトをmusl静的実行ファイルへリンクするコマンドです。
+    pub(crate) fn link(&self, workspace: &Path, source_files: &[String]) -> CommandSpec {
         let linker = self.config.musl_cc_path.to_string_lossy().into_owned();
-        let args = vec![
+        let mut args = vec![
             "-static".to_owned(),
             self.config
                 .runtime_support_object
                 .to_string_lossy()
                 .into_owned(),
-            "main.o".to_owned(),
-            "-lm".to_owned(),
-            "-o".to_owned(),
-            "main".to_owned(),
         ];
+        args.extend(source_files.iter().map(|name| {
+            format!(
+                "{}.o",
+                name.strip_suffix(".c")
+                    .expect("検証済みのCソース名だけを受け取ります")
+            )
+        }));
+        args.extend(["-lm".to_owned(), "-o".to_owned(), "main".to_owned()]);
         self.wrap_compile(workspace, linker, args)
     }
 
@@ -182,7 +184,8 @@ mod tests {
     fn direct_compile_never_uses_shell() {
         let root = tempdir().expect("tempdirを作れます");
         let config = WorkerConfig::for_test(root.path().to_path_buf());
-        let spec = CommandFactory::new(config).compile(root.path());
+        let spec = CommandFactory::new(config)
+            .compile(root.path(), &["main.c".to_owned(), "aaa.c".to_owned()]);
 
         assert_eq!(spec.program, "/usr/bin/clang");
         assert!(
@@ -192,10 +195,13 @@ mod tests {
         );
         assert!(spec.args.contains(&"-nostdinc".to_owned()));
         assert!(spec.args.contains(&"-std=c17".to_owned()));
+        assert!(spec.args.contains(&"main.c".to_owned()));
+        assert!(spec.args.contains(&"aaa.c".to_owned()));
+        assert!(!spec.args.contains(&"-o".to_owned()));
         assert!(!spec.args.iter().any(|arg| arg == "-c" && arg.contains(';')));
     }
 
-    /// directとNsJailの双方でruntime support objectをmain.oより先に一度だけリンクします。
+    /// directとNsJailの双方でruntime support objectを全ユーザーobjectより先に一度だけリンクします。
     #[test]
     fn link_places_runtime_support_before_main_object_for_all_backends() {
         for backend in [BackendKind::Direct, BackendKind::NsJail] {
@@ -203,7 +209,10 @@ mod tests {
             let mut config = WorkerConfig::for_test(root.path().to_path_buf());
             config.backend = backend;
             let support_object = config.runtime_support_object.to_string_lossy().into_owned();
-            let spec = CommandFactory::new(config).link(root.path());
+            let spec = CommandFactory::new(config).link(
+                root.path(),
+                &["main.c".to_owned(), "runtime-support.c".to_owned()],
+            );
 
             let support_positions = spec
                 .args
@@ -211,14 +220,15 @@ mod tests {
                 .enumerate()
                 .filter_map(|(index, argument)| (argument == &support_object).then_some(index))
                 .collect::<Vec<_>>();
-            let main_position = spec
-                .args
-                .iter()
-                .position(|argument| argument == "main.o")
-                .expect("main.oがリンク引数にあります");
-
             assert_eq!(support_positions.len(), 1);
-            assert!(support_positions[0] < main_position);
+            for user_object in ["main.o", "runtime-support.o"] {
+                let object_position = spec
+                    .args
+                    .iter()
+                    .position(|argument| argument == user_object)
+                    .expect("ユーザーobjectがリンク引数にあります");
+                assert!(support_positions[0] < object_position);
+            }
         }
     }
 
