@@ -337,6 +337,7 @@ button:focus-visible,
 }
 
 .xterm .xterm-viewport {
+    background: var(--terminal-background);
     scrollbar-color: var(--border-strong) transparent;
     scrollbar-width: thin;
 }
