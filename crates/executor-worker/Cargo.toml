@@ -1,0 +1,22 @@
+[package]
+name = "executor-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+executor-protocol = { path = "../executor-protocol" }
+futures-util.workspace = true
+portable-pty.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

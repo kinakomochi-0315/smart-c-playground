@@ -1,0 +1,25 @@
+services:
+    proxy:
+        environment:
+            SITE_ADDRESS: http://localhost
+        ports: !override
+            - "127.0.0.1:${RUNTIME_SMOKE_PORT:-18081}:80"
+
+    web:
+        environment:
+            WEB_ORIGIN: http://localhost:${RUNTIME_SMOKE_PORT:-18081}
+            COOKIE_SECURE: "false"
+
+    lsp:
+        environment:
+            WEB_ORIGIN: http://localhost:${RUNTIME_SMOKE_PORT:-18081}
+
+    executor-api:
+        environment:
+            WEB_ORIGIN: http://localhost:${RUNTIME_SMOKE_PORT:-18081}
+            EXECUTOR_MAX_ACTIVE: "1"
+            EXECUTOR_MIN_READY_WORKERS: "1"
+
+    executor-worker:
+        deploy:
+            replicas: 1

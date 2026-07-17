@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package smartc.executor.v1;
+
+// APIとWorkerの間で実行ジョブを配送する内部サービスです。
+service ExecutorControl {
+    // Workerの登録、heartbeat、実行イベントと、APIからのジョブ命令を双方向に流します。
+    rpc Work(stream WorkerMessage) returns (stream ApiMessage);
+}
+
+// WorkerからAPIへ送るメッセージです。
+message WorkerMessage {
+    oneof payload {
+        WorkerRegistration registration = 1;
+        WorkerHeartbeat heartbeat = 2;
+        JobEvent event = 3;
+    }
+}
+
+// APIからWorkerへ送るメッセージです。
+message ApiMessage {
+    oneof payload {
+        JobAssignment assignment = 1;
+        JobCommand command = 2;
+    }
+}
+
+// Workerの能力と識別子を登録します。
+message WorkerRegistration {
+    string worker_id = 1;
+    string architecture = 2;
+    string backend = 3;
+}
+
+// Workerが生存していることと現在のジョブを通知します。
+message WorkerHeartbeat {
+    string worker_id = 1;
+    optional string job_id = 2;
+    int64 unix_time_seconds = 3;
+}
+
+// 新しいC言語ジョブをWorkerへ割り当てます。
+message JobAssignment {
+    string job_id = 1;
+    bytes source = 2;
+    uint32 terminal_cols = 3;
+    uint32 terminal_rows = 4;
+}
+
+// 実行中ジョブへ送る操作です。
+message JobCommand {
+    string job_id = 1;
+
+    oneof action {
+        bytes stdin = 2;
+        TerminalResize resize = 3;
+        CancelJob cancel = 4;
+    }
+}
+
+// PTYの表示サイズを変更します。
+message TerminalResize {
+    uint32 cols = 1;
+    uint32 rows = 2;
+}
+
+// ジョブを終了する理由を伝えます。
+message CancelJob {
+    string reason = 1;
+}
+
+// ジョブの状態や出力をAPIへ通知します。
+message JobEvent {
+    string worker_id = 1;
+    string job_id = 2;
+
+    oneof payload {
+        PhaseEvent phase = 3;
+        CompilerOutput compiler_output = 4;
+        bytes terminal_output = 5;
+        ExitEvent exit = 6;
+        ErrorEvent error = 7;
+    }
+}
+
+// ジョブの現在フェーズです。
+message PhaseEvent {
+    JobPhase phase = 1;
+}
+
+// コンパイラが出力した診断です。
+message CompilerOutput {
+    OutputStream stream = 1;
+    bytes data = 2;
+}
+
+// ジョブ終了時の結果です。
+message ExitEvent {
+    optional int32 code = 1;
+    optional int32 signal = 2;
+    ExitReason reason = 3;
+}
+
+// ジョブを継続できない内部エラーです。
+message ErrorEvent {
+    string code = 1;
+    string message = 2;
+    bool retryable = 3;
+}
+
+// コンパイラ出力の種別です。
+enum OutputStream {
+    OUTPUT_STREAM_UNSPECIFIED = 0;
+    OUTPUT_STREAM_STDOUT = 1;
+    OUTPUT_STREAM_STDERR = 2;
+}
+
+// ジョブのライフサイクルです。
+enum JobPhase {
+    JOB_PHASE_UNSPECIFIED = 0;
+    JOB_PHASE_QUEUED = 1;
+    JOB_PHASE_COMPILING = 2;
+    JOB_PHASE_COMPILE_FAILED = 3;
+    JOB_PHASE_RUNNING = 4;
+    JOB_PHASE_EXITED = 5;
+    JOB_PHASE_TIMED_OUT = 6;
+    JOB_PHASE_RESOURCE_LIMITED = 7;
+    JOB_PHASE_CANCELLED = 8;
+    JOB_PHASE_SANDBOX_VIOLATION = 9;
+}
+
+// 実行が終了した理由です。
+enum ExitReason {
+    EXIT_REASON_UNSPECIFIED = 0;
+    EXIT_REASON_COMPLETED = 1;
+    EXIT_REASON_COMPILE_FAILED = 2;
+    EXIT_REASON_TIMED_OUT = 3;
+    EXIT_REASON_RESOURCE_LIMITED = 4;
+    EXIT_REASON_CANCELLED = 5;
+    EXIT_REASON_SANDBOX_VIOLATION = 6;
+    EXIT_REASON_INTERNAL_ERROR = 7;
+}

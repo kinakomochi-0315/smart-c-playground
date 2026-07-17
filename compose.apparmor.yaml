@@ -1,0 +1,12 @@
+services:
+    lsp:
+        security_opt: !override
+            - no-new-privileges:true
+            - seccomp=./infra/nsjail/worker-outer.seccomp.json
+            - apparmor=smart-c-rootless-sandbox
+
+    executor-worker:
+        security_opt: !override
+            - no-new-privileges:true
+            - seccomp=./infra/nsjail/worker-outer.seccomp.json
+            - apparmor=smart-c-rootless-sandbox

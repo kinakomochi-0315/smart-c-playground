@@ -1,0 +1,45 @@
+services:
+    proxy:
+        restart: unless-stopped
+        environment:
+            SITE_ADDRESS: https://${PUBLIC_HOST:?set PUBLIC_HOST}
+        ports: !override
+            - "80:80"
+            - "443:443"
+            - "443:443/udp"
+
+    web:
+        restart: unless-stopped
+        environment:
+            WEB_ORIGIN: https://${PUBLIC_HOST:?set PUBLIC_HOST}
+            VISITOR_COOKIE_SECRET: ${WEB_VISITOR_SECRET:?set WEB_VISITOR_SECRET}
+            LSP_INTERNAL_TOKEN: ${LSP_INTERNAL_TOKEN:?set LSP_INTERNAL_TOKEN}
+            EXECUTOR_INTERNAL_TOKEN: ${EXECUTOR_INTERNAL_TOKEN:?set EXECUTOR_INTERNAL_TOKEN}
+            COOKIE_SECURE: "true"
+
+    lsp:
+        restart: unless-stopped
+        environment:
+            INTERNAL_SERVICE_TOKEN: ${LSP_INTERNAL_TOKEN:?set LSP_INTERNAL_TOKEN}
+            SESSION_SIGNING_SECRET: ${LSP_TICKET_SECRET:?set LSP_TICKET_SECRET}
+            WEB_ORIGIN: https://${PUBLIC_HOST:?set PUBLIC_HOST}
+
+    executor-api:
+        restart: unless-stopped
+        environment:
+            SMART_C_ENV: production
+            EXECUTOR_MIN_READY_WORKERS: "4"
+            EXECUTOR_INTERNAL_TOKEN: ${EXECUTOR_INTERNAL_TOKEN:?set EXECUTOR_INTERNAL_TOKEN}
+            EXECUTOR_TICKET_SECRET: ${EXECUTOR_TICKET_SECRET:?set EXECUTOR_TICKET_SECRET}
+            EXECUTOR_WORKER_TOKEN: ${WORKER_SERVICE_TOKEN:?set WORKER_SERVICE_TOKEN}
+            WEB_ORIGIN: https://${PUBLIC_HOST:?set PUBLIC_HOST}
+
+    executor-worker:
+        restart: unless-stopped
+        environment:
+            SMART_C_ENV: production
+            EXECUTOR_BACKEND: nsjail
+            EXECUTOR_WORKER_TOKEN: ${WORKER_SERVICE_TOKEN:?set WORKER_SERVICE_TOKEN}
+        security_opt: !override
+            - no-new-privileges:true
+            - seccomp=./infra/nsjail/worker-outer.seccomp.json

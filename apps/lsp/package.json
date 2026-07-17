@@ -1,0 +1,27 @@
+{
+    "name": "@smart-c/lsp",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "tsc -p tsconfig.build.json",
+        "dev": "tsx watch src/index.ts",
+        "lint": "tsc --noEmit",
+        "start": "node dist/index.js",
+        "test": "node --import tsx --test src/*.test.ts",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@hono/node-server": "^2.0.10",
+        "@smart-c/contracts": "workspace:*",
+        "hono": "^4.12.30",
+        "vscode-ws-jsonrpc": "^3.5.0",
+        "ws": "^8.21.1"
+    },
+    "devDependencies": {
+        "@types/node": "^24.0.0",
+        "@types/ws": "^8.18.1",
+        "tsx": "^4.20.3",
+        "typescript": "^5.9.2"
+    }
+}

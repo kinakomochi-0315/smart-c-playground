@@ -1,0 +1,192 @@
+name: smart-c-playground
+
+services:
+    proxy:
+        image: caddy:2.10-alpine
+        environment:
+            SITE_ADDRESS: ${SITE_ADDRESS:-http://localhost}
+        ports:
+            - "127.0.0.1:8080:80"
+        volumes:
+            - ./Caddyfile:/etc/caddy/Caddyfile:ro
+            - caddy_data:/data
+            - caddy_config:/config
+        depends_on:
+            web:
+                condition: service_healthy
+            lsp:
+                condition: service_healthy
+            executor-api:
+                condition: service_healthy
+        networks:
+            - edge
+            - frontend_services
+            - lsp_services
+            - executor_services
+
+    web:
+        build:
+            context: .
+            dockerfile: apps/web/Dockerfile
+            target: production
+        environment:
+            NODE_ENV: production
+            WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+            LSP_BASE_URL: ${LSP_BASE_URL:-http://lsp:3001}
+            EXECUTOR_API_BASE_URL: ${EXECUTOR_API_BASE_URL:-http://executor-api:4000}
+            VISITOR_COOKIE_SECRET: ${WEB_VISITOR_SECRET:-development-web-visitor-secret-change-me}
+            LSP_INTERNAL_TOKEN: ${LSP_INTERNAL_TOKEN:-development-lsp-internal-token-change-me}
+            EXECUTOR_INTERNAL_TOKEN: ${EXECUTOR_INTERNAL_TOKEN:-development-executor-internal-token-change-me}
+            COOKIE_SECURE: ${COOKIE_SECURE:-false}
+        expose:
+            - "3000"
+        read_only: true
+        tmpfs:
+            - /tmp:size=64m,mode=1777
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        pids_limit: 64
+        mem_limit: 512m
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "node",
+                    "-e",
+                    "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+                ]
+            interval: 10s
+            timeout: 3s
+            retries: 6
+            start_period: 20s
+        networks:
+            - frontend_services
+            - lsp_services
+            - executor_services
+
+    lsp:
+        build:
+            context: .
+            dockerfile: apps/lsp/Dockerfile
+            target: production
+        init: true
+        environment:
+            NODE_ENV: production
+            LSP_HOST: 0.0.0.0
+            LSP_PORT: "3001"
+            INTERNAL_SERVICE_TOKEN: ${LSP_INTERNAL_TOKEN:-development-lsp-internal-token-change-me}
+            SESSION_SIGNING_SECRET: ${LSP_TICKET_SECRET:-development-lsp-ticket-secret-change-me}
+            WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+            CLANGD_PATH: /usr/bin/clangd
+            LSP_MAX_SESSIONS: "2"
+        expose:
+            - "3001"
+        read_only: true
+        tmpfs:
+            - /tmp:size=512m,mode=1777
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+            - seccomp=./infra/nsjail/worker-outer.seccomp.json
+        cpus: 2.0
+        pids_limit: 96
+        mem_limit: 1g
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "node",
+                    "-e",
+                    "fetch('http://127.0.0.1:3001/internal/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+                ]
+            interval: 10s
+            timeout: 3s
+            retries: 6
+            start_period: 20s
+        networks:
+            - lsp_services
+
+    executor-api:
+        build:
+            context: .
+            dockerfile: crates/executor-api/Dockerfile
+            target: production
+        environment:
+            RUST_LOG: ${RUST_LOG:-info}
+            SMART_C_ENV: development
+            EXECUTOR_HTTP_ADDR: 0.0.0.0:4000
+            EXECUTOR_GRPC_ADDR: 0.0.0.0:50051
+            EXECUTOR_INTERNAL_TOKEN: ${EXECUTOR_INTERNAL_TOKEN:-development-executor-internal-token-change-me}
+            EXECUTOR_TICKET_SECRET: ${EXECUTOR_TICKET_SECRET:-development-executor-ticket-secret-change-me}
+            EXECUTOR_WORKER_TOKEN: ${WORKER_SERVICE_TOKEN:-development-worker-service-token-change-me}
+            WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+            EXECUTOR_MAX_ACTIVE: "4"
+            EXECUTOR_MAX_QUEUE: "16"
+            EXECUTOR_MAX_SESSIONS: "32"
+        expose:
+            - "4000"
+            - "50051"
+        read_only: true
+        tmpfs:
+            - /tmp:size=64m,mode=1777
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        pids_limit: 64
+        mem_limit: 512m
+        healthcheck:
+            test: ["CMD", "/usr/local/bin/executor-api", "healthcheck"]
+            interval: 10s
+            timeout: 3s
+            retries: 6
+            start_period: 10s
+        networks:
+            - executor_services
+
+    executor-worker:
+        build:
+            context: .
+            dockerfile: crates/executor-worker/Dockerfile
+            target: production
+        environment:
+            RUST_LOG: ${RUST_LOG:-info}
+            SMART_C_ENV: development
+            EXECUTOR_API_GRPC_URL: http://executor-api:50051
+            EXECUTOR_BACKEND: direct
+            EXECUTOR_WORKER_TOKEN: ${WORKER_SERVICE_TOKEN:-development-worker-service-token-change-me}
+            EXECUTOR_WORKSPACE_ROOT: /work
+        read_only: true
+        tmpfs:
+            - /tmp:size=64m,mode=1777
+            - /work:rw,exec,nosuid,nodev,size=768m,mode=1777
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        cpus: 1.0
+        pids_limit: 96
+        mem_limit: 768m
+        deploy:
+            replicas: 4
+        depends_on:
+            executor-api:
+                condition: service_started
+        networks:
+            - executor_services
+
+networks:
+    edge:
+    frontend_services:
+        internal: true
+    lsp_services:
+        internal: true
+    executor_services:
+        internal: true
+
+volumes:
+    caddy_config:
+    caddy_data:

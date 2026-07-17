@@ -1,0 +1,36 @@
+{
+    "name": "smart-c-playground",
+    "version": "0.1.0",
+    "private": true,
+    "description": "対話実行とLSP補完に対応したC言語学習環境",
+    "license": "WTFPL",
+    "packageManager": "pnpm@10.20.0",
+    "engines": {
+        "node": ">=22"
+    },
+    "scripts": {
+        "dev": "docker compose up --build",
+        "dev:js": "pnpm --parallel --filter './apps/*' dev",
+        "dev:down": "docker compose down",
+        "build": "pnpm -r --if-present build && cargo build --workspace",
+        "lint": "pnpm -r --if-present lint && cargo clippy --workspace --all-targets -- -D warnings",
+        "format": "prettier --write . && cargo fmt --all",
+        "format:check": "prettier --check . && cargo fmt --all -- --check",
+        "shell:check": "bash -n scripts/*.sh",
+        "test": "pnpm -r --if-present test && cargo test --workspace",
+        "typecheck": "pnpm -r --if-present typecheck",
+        "verify": "pnpm format:check && pnpm shell:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+        "verify:runtime-cleanup": "node scripts/verify-runtime-cleanup.mjs",
+        "compose:config": "docker compose config",
+        "compose:config:prod": "docker compose -f compose.yaml -f compose.prod.yaml config",
+        "compose:config:runtime-smoke": "docker compose -f compose.yaml -f compose.prod.yaml -f compose.runtime-smoke.yaml config",
+        "compose:config:apparmor": "docker compose -f compose.yaml -f compose.apparmor.yaml config",
+        "compose:config:prod:apparmor": "docker compose -f compose.yaml -f compose.prod.yaml -f compose.apparmor.yaml config"
+    },
+    "devDependencies": {
+        "prettier": "^3.6.2",
+        "tsx": "^4.20.3",
+        "typescript": "^5.9.2",
+        "ws": "8.21.1"
+    }
+}
