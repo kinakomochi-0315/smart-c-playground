@@ -7,6 +7,9 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
+/// Workerイメージに組み込む対話実行用support objectの固定パスです。
+const RUNTIME_SUPPORT_OBJECT_PATH: &str = "/usr/local/lib/smart-c/runtime-support.o";
+
 /// 実行方法を選択します。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BackendKind {
@@ -53,6 +56,8 @@ pub struct WorkerConfig {
     pub musl_include: PathBuf,
     /// 静的リンクに使うmusl-gccです。
     pub musl_cc_path: PathBuf,
+    /// 対話実行向けのstdio設定を含む静的リンク用objectです。
+    pub runtime_support_object: PathBuf,
     /// NsJail実行ファイルです。
     pub nsjail_path: PathBuf,
     /// コンパイル用NsJail設定です。
@@ -135,6 +140,7 @@ impl WorkerConfig {
                 &format!("/usr/include/{}", default_musl_target(env::consts::ARCH)),
             ),
             musl_cc_path: path_env("SMART_C_MUSL_CC", "/usr/bin/musl-gcc"),
+            runtime_support_object: PathBuf::from(RUNTIME_SUPPORT_OBJECT_PATH),
             nsjail_path: path_env("NSJAIL_BIN", "/usr/local/bin/nsjail"),
             nsjail_compile_config: path_env(
                 "NSJAIL_COMPILE_CONFIG",
@@ -172,6 +178,7 @@ impl WorkerConfig {
         require_directory(&self.clang_resource_include)?;
         require_directory(&self.musl_include)?;
         require_file(&self.musl_cc_path)?;
+        require_file(&self.runtime_support_object)?;
         if self.backend == BackendKind::NsJail {
             for path in [
                 &self.nsjail_path,
@@ -205,6 +212,7 @@ impl WorkerConfig {
                 default_musl_target(env::consts::ARCH)
             )),
             musl_cc_path: PathBuf::from("/usr/bin/musl-gcc"),
+            runtime_support_object: PathBuf::from(RUNTIME_SUPPORT_OBJECT_PATH),
             nsjail_path: PathBuf::from("/usr/local/bin/nsjail"),
             nsjail_compile_config: PathBuf::from("/etc/smart-c/nsjail/compile.cfg"),
             nsjail_runtime_config: PathBuf::from("/etc/smart-c/nsjail/runtime.cfg"),
@@ -289,7 +297,11 @@ fn is_visible_ascii(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_visible_ascii;
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::{ConfigError, WorkerConfig, is_visible_ascii};
 
     #[test]
     fn validates_worker_token_characters() {
@@ -298,5 +310,32 @@ mod tests {
         assert!(!is_visible_ascii("contains space"));
         assert!(!is_visible_ascii("contains\nnewline"));
         assert!(!is_visible_ascii("日本語"));
+    }
+
+    /// runtime support objectが欠落したWorker設定を起動前検証で拒否します。
+    #[test]
+    fn rejects_missing_runtime_support_object() {
+        let root = tempdir().expect("tempdirを作れます");
+        let mut config = WorkerConfig::for_test(root.path().join("workspaces"));
+        config.clang_path = root.path().join("clang");
+        config.clang_resource_include = root.path().join("clang-resource-include");
+        config.musl_include = root.path().join("musl-include");
+        config.musl_cc_path = root.path().join("musl-gcc");
+        config.runtime_support_object = root.path().join("missing-runtime-support.o");
+
+        fs::write(&config.clang_path, []).expect("clangの代替fileを作れます");
+        fs::create_dir(&config.clang_resource_include)
+            .expect("clang resource includeの代替directoryを作れます");
+        fs::create_dir(&config.musl_include).expect("musl includeの代替directoryを作れます");
+        fs::write(&config.musl_cc_path, []).expect("musl-gccの代替fileを作れます");
+
+        let error = config
+            .validate_preconditions()
+            .expect_err("support objectの欠落を拒否します");
+
+        assert!(matches!(
+            error,
+            ConfigError::MissingFile(path) if path == config.runtime_support_object
+        ));
     }
 }

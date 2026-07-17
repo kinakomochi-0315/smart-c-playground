@@ -71,6 +71,45 @@ int main(void) {
         "Clang compileとmusl linkのABIが一致しません",
     )?;
 
+    let interactive_prompt = run_case_with_inputs(
+        &config,
+        "interactive-prompt",
+        r#"#include <stdio.h>
+int main(void) {
+    int a;
+    int b;
+    printf("a: ");
+    if (scanf("%d", &a) != 1) { return 2; }
+    printf("b: ");
+    if (scanf("%d", &b) != 1) { return 3; }
+    printf("VALUES:%d,%d\n", a, b);
+    return 0;
+}
+"#,
+        Duration::from_secs(15),
+        &[
+            PromptInput {
+                prompt: b"a: ",
+                input: b"30\n",
+            },
+            PromptInput {
+                prompt: b"b: ",
+                input: b"1000\n",
+            },
+        ],
+    )
+    .await?;
+    require_running("interactive-prompt", &interactive_prompt)?;
+    require(
+        interactive_prompt.reason == ExitReason::Completed
+            && interactive_prompt.code == Some(0)
+            && interactive_prompt.output.contains("a: ")
+            && interactive_prompt.output.contains("b: ")
+            && interactive_prompt.output.contains("VALUES:30,1000"),
+        "interactive-prompt",
+        "改行なしpromptを入力前に表示して値を読み取れません",
+    )?;
+
     let host_marker = config.workspace_root.join("smart-c-host-marker");
     std::fs::write(&host_marker, b"HOST_ONLY_SECRET")?;
     let compile_source = format!(
@@ -276,11 +315,30 @@ struct SmokeResult {
     phases: Vec<JobPhase>,
 }
 
+/// promptを受信した後にPTYへ送信する入力です。
+struct PromptInput {
+    /// 入力送信を許可する端末出力です。
+    prompt: &'static [u8],
+    /// prompt受信後に送信するバイト列です。
+    input: &'static [u8],
+}
+
 async fn run_case(
     config: &WorkerConfig,
     name: &'static str,
     source: &str,
     timeout: Duration,
+) -> Result<SmokeResult, SmokeError> {
+    run_case_with_inputs(config, name, source, timeout, &[]).await
+}
+
+/// 分割された端末出力を連結し、実行開始後のpromptに対応する入力を順番に送ります。
+async fn run_case_with_inputs(
+    config: &WorkerConfig,
+    name: &'static str,
+    source: &str,
+    timeout: Duration,
+    prompt_inputs: &[PromptInput],
 ) -> Result<SmokeResult, SmokeError> {
     let job_id = Uuid::new_v4();
     let assignment = JobAssignment {
@@ -306,49 +364,74 @@ async fn run_case(
     let mut compiler_output = Vec::new();
     let mut phases = Vec::new();
     let mut internal_error = None;
-    let (reason, code) = loop {
-        let message = tokio::select! {
-            message = outbound_receiver.recv() => {
-                message.ok_or(SmokeError::MissingExit(name))?
+    let mut next_input = 0_usize;
+    let outcome: Result<(ExitReason, Option<i32>), SmokeError> = async {
+        loop {
+            let message = tokio::select! {
+                message = outbound_receiver.recv() => {
+                    message.ok_or(SmokeError::MissingExit(name))?
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    return Err(SmokeError::TimedOut(name));
+                }
+            };
+            let Some(worker_message::Payload::Event(event)) = message.payload else {
+                continue;
+            };
+            match event.payload {
+                Some(job_event::Payload::Phase(phase)) => {
+                    phases.push(
+                        JobPhase::try_from(phase.phase)
+                            .map_err(|_| SmokeError::InvalidPhase(name))?,
+                    );
+                }
+                Some(job_event::Payload::CompilerOutput(data)) => {
+                    compiler_output.extend_from_slice(&data.data);
+                }
+                Some(job_event::Payload::TerminalOutput(data)) => {
+                    output.extend_from_slice(&data);
+                }
+                Some(job_event::Payload::Error(error)) => {
+                    internal_error = Some(error.message);
+                }
+                Some(job_event::Payload::Exit(exit)) => {
+                    let reason = ExitReason::try_from(exit.reason)
+                        .map_err(|_| SmokeError::InvalidExit(name))?;
+                    return Ok((reason, exit.code));
+                }
+                _ => {}
             }
-            _ = tokio::time::sleep_until(deadline) => {
-                let _ = control_sender.send(JobControl::Cancel).await;
-                return Err(SmokeError::TimedOut(name));
+
+            // compile中の偶然の一致では入力せず、runtime開始後の端末出力だけを対象にします。
+            if phases.contains(&JobPhase::Running) {
+                while let Some(prompt_input) = prompt_inputs.get(next_input) {
+                    let saw_prompt = output
+                        .windows(prompt_input.prompt.len())
+                        .any(|window| window == prompt_input.prompt);
+                    if !saw_prompt {
+                        break;
+                    }
+                    control_sender
+                        .send(JobControl::Input(prompt_input.input.to_vec()))
+                        .await
+                        .map_err(|_| SmokeError::InputDisconnected(name))?;
+                    next_input += 1;
+                }
             }
-        };
-        let Some(worker_message::Payload::Event(event)) = message.payload else {
-            continue;
-        };
-        match event.payload {
-            Some(job_event::Payload::Phase(phase)) => {
-                phases.push(
-                    JobPhase::try_from(phase.phase).map_err(|_| SmokeError::InvalidPhase(name))?,
-                );
-            }
-            Some(job_event::Payload::CompilerOutput(output)) => {
-                compiler_output.extend_from_slice(&output.data);
-            }
-            Some(job_event::Payload::TerminalOutput(data)) => {
-                output.extend_from_slice(&data);
-            }
-            Some(job_event::Payload::Error(error)) => {
-                internal_error = Some(error.message);
-            }
-            Some(job_event::Payload::Exit(exit)) => {
-                let reason =
-                    ExitReason::try_from(exit.reason).map_err(|_| SmokeError::InvalidExit(name))?;
-                break (reason, exit.code);
-            }
-            _ => {}
         }
-    };
-    tokio::time::timeout(Duration::from_secs(2), task)
-        .await
-        .map_err(|_| SmokeError::CleanupTimedOut(name))?
-        .map_err(|_| SmokeError::TaskPanicked(name))?;
-    assert_workspace_removed(&config.workspace_root, job_id, name)?;
+    }
+    .await;
+
+    if outcome.is_err() {
+        let _ = control_sender.try_send(JobControl::Cancel);
+    }
+    await_task_and_workspace_cleanup(&config.workspace_root, job_id, name, task).await?;
+    let (reason, code) = outcome?;
     if let Some(message) = internal_error {
         return Err(SmokeError::Internal { name, message });
+    }
+    if next_input != prompt_inputs.len() {
+        return Err(SmokeError::MissingPrompt(name));
     }
     Ok(SmokeResult {
         reason,
@@ -357,6 +440,33 @@ async fn run_case(
         compiler_output: String::from_utf8_lossy(&compiler_output).into_owned(),
         phases,
     })
+}
+
+/// 実行タスクの終了とジョブworkspaceの削除を共通期限内で確認します。
+async fn await_task_and_workspace_cleanup(
+    root: &Path,
+    job_id: Uuid,
+    name: &'static str,
+    task: tokio::task::JoinHandle<()>,
+) -> Result<(), SmokeError> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut task = task;
+    let task_result = match tokio::time::timeout_at(deadline, &mut task).await {
+        Ok(result) => result,
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            return Err(SmokeError::CleanupTimedOut(name));
+        }
+    };
+
+    while workspace_exists(root, job_id)? {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(SmokeError::CleanupTimedOut(name));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    task_result.map_err(|_| SmokeError::TaskPanicked(name))
 }
 
 fn require_forbidden_syscall_was_blocked(
@@ -391,22 +501,16 @@ fn require(condition: bool, name: &'static str, detail: &'static str) -> Result<
     }
 }
 
-fn assert_workspace_removed(
-    root: &Path,
-    job_id: Uuid,
-    name: &'static str,
-) -> Result<(), SmokeError> {
+/// 指定ジョブのworkspaceが残っているかを確認します。
+fn workspace_exists(root: &Path, job_id: Uuid) -> Result<bool, std::io::Error> {
     let job_id = job_id.to_string();
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         if entry.file_name().to_string_lossy().contains(&job_id) {
-            return Err(SmokeError::Assertion {
-                name,
-                detail: "ジョブworkspaceが終了後も残っています",
-            });
+            return Ok(true);
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// sandbox smoke testが失敗した理由です。
@@ -421,6 +525,12 @@ pub enum SmokeError {
     /// 終了イベントがありません。
     #[error("{0}: Workerが終了イベントを送信しませんでした")]
     MissingExit(&'static str),
+    /// 必要なpromptを受信する前に実行が終了しました。
+    #[error("{0}: 必要なpromptをすべて受信できませんでした")]
+    MissingPrompt(&'static str),
+    /// promptに対応する入力を実行中ジョブへ送信できません。
+    #[error("{0}: 実行中ジョブへstdinを送信できませんでした")]
+    InputDisconnected(&'static str),
     /// 終了理由が契約外です。
     #[error("{0}: 終了理由が不正です")]
     InvalidExit(&'static str),

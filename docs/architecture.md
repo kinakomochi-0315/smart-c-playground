@@ -49,8 +49,8 @@ flowchart LR
 1. ブラウザがコードと端末サイズを `POST /api/executions` へ送ります。
 2. Next.jsとexecutor-apiがサイズ、レート、同時実行数を検証します。
 3. executor-apiは短命ticketを発行し、WebSocket接続後にジョブをキューへ入れます。
-4. 空きWorkerがcompile jailでClang C17を実行し、静的実行ファイルを生成します。
-5. コンパイル成功後、別のruntime jailでPTYへ接続して実行します。
+4. 空きWorkerがcompile jailでClang C17を実行し、利用者の `main.o` とWorkerイメージ内の信頼済み `runtime-support.o` を静的リンクして、静的実行ファイルを生成します。
+5. `runtime-support.o` のconstructorが `main` より前にruntime stdoutを無バッファ化した後、別のruntime jailでPTYへ接続して実行します。
 6. binary WebSocket frameは端末bytes、text frameはphase・終了・制御JSONとして扱います。
 7. 終了、停止、切断、制限超過の全経路でプロセスグループとworkspaceを破棄します。
 
@@ -58,6 +58,8 @@ flowchart LR
 
 - LSPの診断は事前ヒントであり、実行可否を決めません。
 - stdoutとstderrはPTY上で統合され、実際に表示された順序を優先します。
+- stdoutの無バッファ化は静的実行ファイル内だけで完結し、REST、WebSocket、gRPCの契約とPTYの入出力境界は変更しません。
+- stdoutのバッファ方式は実行環境が所有し、利用者コードによる再設定後の挙動は保証しません。
 - WebSocketの再接続は行いません。切断された実行は中止します。
 - サーバーへコード、入力、出力、履歴を保存しません。
 - 開発用のdirect backendは公開環境では使用できません。

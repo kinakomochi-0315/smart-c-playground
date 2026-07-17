@@ -331,7 +331,7 @@ async function disconnectLspSession(socket) {
 }
 
 /**
- * 標準入力を待ち続けるC17実行セッションを公開APIから作成します。
+ * 改行なしのpromptを出力し、標準入力を待つC17実行セッションを公開APIから作成します。
  */
 async function createLongExecution(cookie) {
     const response = await fetch(`${httpOrigin}/api/executions`, {
@@ -342,7 +342,7 @@ async function createLongExecution(cookie) {
             ...(cookie === "" ? {} : { Cookie: cookie }),
         },
         body: JSON.stringify({
-            source: '#include <stdio.h>\nint main(void) { puts("RUNTIME_SMOKE_READY"); fflush(stdout); return getchar() == EOF; }',
+            source: '#include <stdio.h>\nint main(void) { printf("RUNTIME_SMOKE_READY"); return getchar() == EOF; }',
             terminal: { cols: 100, rows: 30 },
         }),
     });
@@ -358,7 +358,7 @@ async function createLongExecution(cookie) {
 }
 
 /**
- * 実行WebSocketへ接続し、Cプロセスの入力待ち開始まで待機します。
+ * 実行WebSocketへ接続し、入力や切断の前に改行なしpromptを受信できることを確認します。
  */
 async function connectRunningExecution(cookie) {
     const created = await createLongExecution(cookie);

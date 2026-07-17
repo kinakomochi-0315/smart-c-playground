@@ -52,6 +52,19 @@ RUN apt-get update \
     && mkdir --parents /jail/workspace /jail/tmp /work \
     && chmod 1777 /work
 
+COPY crates/executor-worker/runtime-support/stdio.c /tmp/smart-c-runtime-support/stdio.c
+RUN mkdir --parents /usr/local/lib/smart-c \
+    && musl-gcc \
+        -std=c17 \
+        -O2 \
+        -Wall \
+        -Wextra \
+        -Wpedantic \
+        -c /tmp/smart-c-runtime-support/stdio.c \
+        -o /usr/local/lib/smart-c/runtime-support.o \
+    && chmod 0444 /usr/local/lib/smart-c/runtime-support.o \
+    && rm --recursive /tmp/smart-c-runtime-support
+
 COPY --from=rust-builder /src/target/release/executor-worker /usr/local/bin/executor-worker
 COPY --from=nsjail-builder /src/nsjail/nsjail /usr/local/bin/nsjail
 COPY infra/nsjail /etc/smart-c/nsjail
