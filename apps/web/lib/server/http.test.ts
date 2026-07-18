@@ -1,7 +1,43 @@
 import { NextRequest } from "next/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getClientIp, MAX_REQUEST_BYTES, readJsonBody } from "@/lib/server/http";
+import { getClientIp, MAX_REQUEST_BYTES, readJsonBody, validateJsonPost } from "@/lib/server/http";
+
+afterEach(() => {
+    vi.unstubAllEnvs();
+});
+
+describe("validateJsonPost", () => {
+    it("Tunnel内部がHTTPでも設定済みのHTTPS Originを許可する", () => {
+        vi.stubEnv("WEB_ORIGIN", "https://playground.example.com");
+        const request = new NextRequest("http://web:3000/api/executions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Origin: "https://playground.example.com",
+                "X-Forwarded-Host": "playground.example.com",
+                "X-Forwarded-Proto": "http",
+            },
+        });
+
+        expect(validateJsonPost(request)).toBeNull();
+    });
+
+    it("転送ヘッダーが一致しても設定外のOriginを拒否する", () => {
+        vi.stubEnv("WEB_ORIGIN", "https://playground.example.com");
+        const request = new NextRequest("http://web:3000/api/executions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Origin: "https://evil.example.com",
+                "X-Forwarded-Host": "evil.example.com",
+                "X-Forwarded-Proto": "https",
+            },
+        });
+
+        expect(validateJsonPost(request)).toHaveProperty("status", 403);
+    });
+});
 
 describe("getClientIp", () => {
     it("Caddyが生成したX-Forwarded-Forの先頭だけを使用する", () => {

@@ -64,13 +64,13 @@ export function validateJsonPost(request: NextRequest): NextResponse | null {
         return problemResponse(403, "送信元を確認できません", "ブラウザから同一オリジンでアクセスしてください。");
     }
 
+    const expectedOrigin = process.env.WEB_ORIGIN ?? "http://localhost:8080";
+
     try {
         const originUrl = new URL(origin);
-        const forwardedHost =
-            request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? request.nextUrl.host;
-        const forwardedProtocol = request.headers.get("x-forwarded-proto") ?? request.nextUrl.protocol.replace(":", "");
 
-        if (originUrl.host !== forwardedHost || originUrl.protocol !== `${forwardedProtocol}:`) {
+        // Tunnel内のHTTP区間ではなく、サーバー管理下の公開Originだけを信頼します。
+        if (originUrl.origin !== origin || origin !== expectedOrigin) {
             return problemResponse(403, "異なる送信元からの操作は許可されていません");
         }
     } catch {
