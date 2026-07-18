@@ -68,6 +68,7 @@ RUN mkdir --parents /usr/local/lib/smart-c \
 COPY --from=rust-builder /src/target/release/executor-worker /usr/local/bin/executor-worker
 COPY --from=nsjail-builder /src/nsjail/nsjail /usr/local/bin/nsjail
 COPY infra/nsjail /etc/smart-c/nsjail
+RUN chmod 0444 /etc/smart-c/nsjail/*.cfg /etc/smart-c/nsjail/*.seccomp
 COPY LICENSE LICENSES/Apache-2.0.txt THIRD_PARTY_NOTICES.md /usr/share/licenses/smart-c-playground/
 
 USER 10001:10001
