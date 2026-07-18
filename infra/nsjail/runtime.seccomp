@@ -10,8 +10,7 @@ POLICY runtime {
         exit,
         exit_group,
         fcntl,
-        fstat ON x86_64,
-        newfstat ON aarch64,
+        newfstat,
         futex,
         getpid,
         getrandom,
@@ -44,8 +43,7 @@ POLICY runtime {
         set_tid_address,
         sigaltstack,
         statx,
-        uname ON x86_64,
-        newuname ON aarch64,
+        newuname,
         write,
         writev
     }
