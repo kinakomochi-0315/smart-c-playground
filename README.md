@@ -63,7 +63,8 @@ pnpm dev:down
 ```bash
 pnpm verify
 pnpm compose:config
-PUBLIC_HOST=localhost \
+SITE_ADDRESS=https://localhost \
+WEB_ORIGIN=https://localhost \
 WEB_VISITOR_SECRET=ci-web-visitor-secret-with-sufficient-length \
 LSP_INTERNAL_TOKEN=ci-lsp-internal-token-with-sufficient-length \
 LSP_TICKET_SECRET=ci-lsp-ticket-secret-with-sufficient-length \

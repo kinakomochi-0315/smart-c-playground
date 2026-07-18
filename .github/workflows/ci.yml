@@ -39,7 +39,6 @@ jobs:
 
             - name: Validate Compose
               env:
-                  PUBLIC_HOST: localhost
                   SITE_ADDRESS: http://localhost
                   WEB_VISITOR_SECRET: ci-web-visitor-secret-with-sufficient-length
                   LSP_INTERNAL_TOKEN: ci-lsp-internal-token-with-sufficient-length

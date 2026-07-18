@@ -11,7 +11,7 @@ services:
     web:
         restart: unless-stopped
         environment:
-            WEB_ORIGIN: https://${PUBLIC_HOST:?set PUBLIC_HOST}
+            WEB_ORIGIN: ${WEB_ORIGIN:?set WEB_ORIGIN}
             VISITOR_COOKIE_SECRET: ${WEB_VISITOR_SECRET:?set WEB_VISITOR_SECRET}
             LSP_INTERNAL_TOKEN: ${LSP_INTERNAL_TOKEN:?set LSP_INTERNAL_TOKEN}
             EXECUTOR_INTERNAL_TOKEN: ${EXECUTOR_INTERNAL_TOKEN:?set EXECUTOR_INTERNAL_TOKEN}
@@ -22,7 +22,7 @@ services:
         environment:
             INTERNAL_SERVICE_TOKEN: ${LSP_INTERNAL_TOKEN:?set LSP_INTERNAL_TOKEN}
             SESSION_SIGNING_SECRET: ${LSP_TICKET_SECRET:?set LSP_TICKET_SECRET}
-            WEB_ORIGIN: https://${PUBLIC_HOST:?set PUBLIC_HOST}
+            WEB_ORIGIN: ${WEB_ORIGIN:?set WEB_ORIGIN}
 
     executor-api:
         restart: unless-stopped
@@ -32,7 +32,7 @@ services:
             EXECUTOR_INTERNAL_TOKEN: ${EXECUTOR_INTERNAL_TOKEN:?set EXECUTOR_INTERNAL_TOKEN}
             EXECUTOR_TICKET_SECRET: ${EXECUTOR_TICKET_SECRET:?set EXECUTOR_TICKET_SECRET}
             EXECUTOR_WORKER_TOKEN: ${WORKER_SERVICE_TOKEN:?set WORKER_SERVICE_TOKEN}
-            WEB_ORIGIN: https://${PUBLIC_HOST:?set PUBLIC_HOST}
+            WEB_ORIGIN: ${WEB_ORIGIN:?set WEB_ORIGIN}
 
     executor-worker:
         restart: unless-stopped
