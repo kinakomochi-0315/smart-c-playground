@@ -26,6 +26,7 @@ POLICY runtime {
         munmap,
         nanosleep,
         newfstatat,
+        open ON x86_64,
         openat,
         poll ON x86_64,
         ppoll,
